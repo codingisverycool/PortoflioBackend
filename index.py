@@ -768,5 +768,6 @@ def clear_transactions_api():
             'error': f"Error clearing transactions: {str(e)}"
         }), 500
 
-def handler(environ, start_response):
-    return app(environ, start_response)
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
