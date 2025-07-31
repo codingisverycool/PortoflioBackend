@@ -5,8 +5,6 @@ import yfinance as yf
 import plotly.graph_objs as go
 import plotly.express as px
 import plotly.io as pio
-from index import User  
-from index import load_users
 import base64
 import json
 import os
