@@ -1,0 +1,142 @@
+[
+  {
+    "type": "Buy",
+    "stock": "AAPL",
+    "quantity": 20,
+    "price": 150.25,
+    "date": "2022-01-15"
+  },
+  {
+    "type": "Buy",
+    "stock": "TSLA",
+    "quantity": 5,
+    "price": 180.5,
+    "date": "2022-02-10"
+  },
+  {
+    "type": "Buy",
+    "stock": "AMZN",
+    "quantity": 10,
+    "price": 120.75,
+    "date": "2022-03-05"
+  },
+  {
+    "type": "Sell",
+    "stock": "AAPL",
+    "quantity": 10,
+    "price": 165.8,
+    "date": "2022-04-20"
+  },
+  {
+    "type": "Buy",
+    "stock": "NVDA",
+    "quantity": 15,
+    "price": 220.4,
+    "date": "2022-05-12"
+  },
+  {
+    "type": "Buy",
+    "stock": "COST",
+    "quantity": 8,
+    "price": 480.9,
+    "date": "2022-06-08"
+  },
+  {
+    "type": "Sell",
+    "stock": "TSLA",
+    "quantity": 3,
+    "price": 210.25,
+    "date": "2022-07-15"
+  },
+  {
+    "type": "Buy",
+    "stock": "AMD",
+    "quantity": 25,
+    "price": 85.6,
+    "date": "2022-08-22"
+  },
+  {
+    "type": "Buy",
+    "stock": "SBUX",
+    "quantity": 12,
+    "price": 92.3,
+    "date": "2022-09-05"
+  },
+  {
+    "type": "Sell",
+    "stock": "AMZN",
+    "quantity": 5,
+    "price": 110.4,
+    "date": "2022-10-18"
+  },
+  {
+    "type": "Buy",
+    "stock": "MRNA",
+    "quantity": 18,
+    "price": 145.75,
+    "date": "2022-11-09"
+  },
+  {
+    "type": "Buy",
+    "stock": "F",
+    "quantity": 30,
+    "price": 12.8,
+    "date": "2022-12-14"
+  },
+  {
+    "type": "Sell",
+    "stock": "NVDA",
+    "quantity": 8,
+    "price": 240.6,
+    "date": "2023-01-20"
+  },
+  {
+    "type": "Buy",
+    "stock": "INTC",
+    "quantity": 20,
+    "price": 28.45,
+    "date": "2023-02-15"
+  },
+  {
+    "type": "Sell",
+    "stock": "COST",
+    "quantity": 4,
+    "price": 510.2,
+    "date": "2023-03-10"
+  },
+  {
+    "type": "Buy",
+    "stock": "AAPL",
+    "quantity": 56,
+    "price": 78.0,
+    "date": "2025-07-01"
+  },
+  {
+    "type": "Buy",
+    "stock": "CNH",
+    "quantity": 50,
+    "price": 900.0,
+    "date": "2025-07-23"
+  },
+  {
+    "type": "Sell",
+    "stock": "AAPL",
+    "quantity": 10,
+    "price": 250.0,
+    "date": "2025-07-05"
+  },
+  {
+    "type": "Buy",
+    "stock": "AAPL",
+    "quantity": 50,
+    "price": 50.0,
+    "date": "2025-07-09"
+  },
+  {
+    "type": "Buy",
+    "stock": "AAPL",
+    "quantity": 50,
+    "price": 50.0,
+    "date": "2025-07-09"
+  }
+]
