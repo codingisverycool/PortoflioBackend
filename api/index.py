@@ -15,6 +15,7 @@ from flask_mail import Mail, Message
 import secrets
 from collections import defaultdict
 import pandas as pd
+import logging
 
 app = Flask(__name__)
 CORS(app, supports_credentials=True, origins=["https://turiyaportfolioplatform-9v5cm5rvi-aaryans-projects-56d3a379.vercel.app"])
@@ -312,27 +313,44 @@ def compute_holdings_from_transactions(transactions):
 def login():
     users = load_users()
     data = request.json
+
+    logging.debug(f"Login attempt data received: {data}")
+
     email = data.get('email', '').strip().lower()
     password = data.get('password')
 
+    logging.debug(f"Processed email: {email}")
+    logging.debug(f"Password provided: {'Yes' if password else 'No'}")
+
     if email not in users:
+        logging.warning(f"Login failed - email not found: {email}")
         return jsonify({'success': False, 'error': 'Invalid credentials'}), 401
 
     user_data = users.get(email)
 
+    logging.debug(f"User data found: {user_data}")
+
     if not user_data.get('verified', False):
+        logging.warning(f"Login failed - account not verified: {email}")
         return jsonify({'success': False, 'error': 'Account not verified'}), 403
 
-    if not check_password_hash(user_data['password'], password):
+    # To check the hashed password presence
+    stored_password_hash = user_data.get('password')
+    if not stored_password_hash:
+        logging.error(f"No password hash stored for user: {email}")
+        return jsonify({'success': False, 'error': 'Invalid credentials'}), 401
+
+    if not check_password_hash(stored_password_hash, password):
+        logging.warning(f"Login failed - invalid password for user: {email}")
         return jsonify({'success': False, 'error': 'Invalid credentials'}), 401
 
     user = User(email)
     login_user(user)
 
-    response = make_response(jsonify({'success': True, 'message': 'Logged in successfully'}), 200)
+    logging.info(f"User logged in successfully: {email}")
 
-    # Optional: Set SameSite/secure flags for session cookie manually
-    session.permanent = True  # Optional
+    response = make_response(jsonify({'success': True, 'message': 'Logged in successfully'}), 200)
+    session.permanent = True
     response.headers.add('Access-Control-Allow-Credentials', 'true')
 
     return response
