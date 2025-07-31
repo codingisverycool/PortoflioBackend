@@ -763,3 +763,6 @@ def clear_transactions_api():
             'error': f"Error clearing transactions: {str(e)}"
         }), 500
 
+@app.route('/api/ping', methods=['GET'])
+def ping():
+    return jsonify({'ping': 'pong'})
