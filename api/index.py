@@ -1,10 +1,12 @@
-from flask import Flask, request, url_for, jsonify
+from flask import Flask, request, url_for, jsonify, make_response, session
 from flask_cors import CORS 
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
 import yfinance as yf
 import plotly.graph_objs as go
 import plotly.express as px
 import plotly.io as pio
+from index import User  
+from index import load_users
 import base64
 import json
 import os
@@ -761,6 +763,3 @@ def clear_transactions_api():
             'error': f"Error clearing transactions: {str(e)}"
         }), 500
 
-@app.route('/api/ping', methods=['GET'])
-def ping():
-    return jsonify({'ping': 'pong'})
