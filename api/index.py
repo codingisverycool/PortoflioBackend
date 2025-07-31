@@ -306,7 +306,7 @@ def compute_holdings_from_transactions(transactions):
 
     return holdings
 
-@app.route('/login', methods=['POST'])
+@app.route('/api/login', methods=['POST'])
 def login():
     users = load_users()
     data = request.json
@@ -333,7 +333,7 @@ def unauthorized():
     return jsonify({'success': False, 'error': 'Unauthorized'}), 401
 
 
-@app.route('/register', methods=['POST'])
+@app.route('/api/register', methods=['POST'])
 def register():
     users = load_users()
     data = request.json
@@ -414,13 +414,13 @@ def save_user_data(data):
             'avg_cost[]': data.getlist('avg_cost[]') if hasattr(data, 'getlist') else data.get('avg_cost[]', [])
         }, f)
 
-@app.route('/logout', methods=['POST'])
+@app.route('/api/logout', methods=['POST'])
 @login_required
 def logout():
     logout_user()
     return jsonify({'success': True, 'message': 'Logged out successfully'}), 200
 
-@app.route('/portfolio', methods=['GET'])
+@app.route('/api/portfolio', methods=['GET'])
 @login_required
 def portfolio_tracker_api():
     tx_file = os.path.join('user_data', current_user.id, 'transactions.json')
@@ -558,7 +558,7 @@ def portfolio_tracker_api():
         }
     })
 
-@app.route('/transactions', methods=['GET', 'POST'])
+@app.route('/api/transactions', methods=['GET', 'POST'])
 @login_required
 def transactions_api():
     user_file = f'user_data/{current_user.id}/transactions.json'
@@ -641,7 +641,7 @@ def transactions_api():
     })
 
 
-@app.route('/valuation', methods=['GET'])
+@app.route('/api/valuation', methods=['GET'])
 @login_required
 def valuation_dashboard_api():
     try:
@@ -733,7 +733,7 @@ def valuation_dashboard_api():
     except Exception as e:
         return jsonify({'success': False, 'error': f"Error loading valuation data: {str(e)}"}), 500
 
-@app.route('/clear_transactions', methods=['POST'])
+@app.route('/api/clear_transactions', methods=['POST'])
 @login_required
 def clear_transactions_api():
     user_file = f'user_data/{current_user.id}/transactions.json'
@@ -749,5 +749,4 @@ def clear_transactions_api():
             'success': False,
             'error': f"Error clearing transactions: {str(e)}"
         }), 500
-
 
