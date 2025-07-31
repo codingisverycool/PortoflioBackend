@@ -640,16 +640,16 @@ def transactions_api():
         })
 
     return jsonify({
-        'success': True,
-        'transactions': enhanced_transactions,
-        'stockPerformance': stock_performance,
-        'realizedGainsTotal': realized_gains_total,
-        'portfolioIRR': portfolio_irr,
-        'current_user':{
-            'id': current_user.id,
-            'is_authenticated': current_user.is_authenticated,
+    'success': True,
+    'transactions': enhanced_transactions,
+    'stockPerformance': stock_performance,
+    'realizedGainsTotal': realized_gains_total,
+    'portfolioIRR': portfolio_irr,
+    'current_user': {
+        'id': current_user.id,
+        'is_authenticated': current_user.is_authenticated,
     }
-    })
+})
 
 
 @app.route('/api/valuation', methods=['GET'])
