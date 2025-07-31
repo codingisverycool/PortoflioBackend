@@ -2,6 +2,10 @@ from flask import Flask, request, url_for, jsonify
 from flask_cors import CORS 
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
 import yfinance as yf
+import plotly.graph_objs as go
+import plotly.express as px
+import plotly.io as pio
+import base64
 import json
 import os
 from datetime import datetime
@@ -143,6 +147,47 @@ def calculate_portfolio_irr(transactions):
         return annualized_return
     except Exception:
         return 0
+
+# Generate pie chart and return base64 encoded PNG
+def fig_to_base64_img(fig):
+    img_bytes = fig.to_image(format="png")
+    return base64.b64encode(img_bytes).decode('utf8')
+
+
+def generate_pie_chart(values, labels, title):
+    fig = px.pie(
+        names=labels,
+        values=values,
+        title=title
+    )
+    return fig_to_base64_img(fig)
+
+
+def generate_bar_chart(df, value_col, label_col, title):
+    df_sorted = df.sort_values(value_col)
+    colors = ['green' if x >= 0 else 'red' for x in df_sorted[value_col]]
+    fig = px.bar(
+        df_sorted,
+        x=value_col,
+        y=label_col,
+        orientation='h',
+        title=title,
+        color=df_sorted[value_col].apply(lambda x: 'Positive' if x >= 0 else 'Negative'),
+        color_discrete_map={'Positive': 'green', 'Negative': 'red'}
+    )
+    return fig_to_base64_img(fig)
+
+
+def generate_treemap(df, size_col, label_col, color_col, title):
+    fig = px.treemap(
+        df,
+        path=[label_col],
+        values=size_col,
+        color=color_col,
+        color_continuous_scale='RdYlGn',
+        title=title
+    )
+    return fig_to_base64_img(fig)
 
 def calculate_realized_and_initial_investment(transactions): 
     lots = {}  # FIFO lots per stock
@@ -386,13 +431,6 @@ def logout():
     logout_user()
     return jsonify({'success': True, 'message': 'Logged out successfully'}), 200
 
-from flask import jsonify, request
-from flask_login import login_required, current_user
-from collections import defaultdict
-import os
-import json
-import pandas as pd
-
 @app.route('/api/portfolio', methods=['GET'])
 @login_required
 def portfolio_tracker_api():
@@ -455,32 +493,66 @@ def portfolio_tracker_api():
         total_cost += total_cost_stock
         sector_values[stock_info.get('sector', 'Other')] += current_value
 
-    # Add allocation %
+    # Now calculate AllocationPercent after total_value is known
     for entry in portfolio_data:
         cv = entry.get('Current Value')
         entry['AllocationPercent'] = (cv / total_value) * 100 if total_value > 0 else 0
 
     df = pd.DataFrame(portfolio_data)
 
-    # Build datasets for frontend charts
-    allocation = [
-        {'ticker': row['Ticker'], 'allocation': row['AllocationPercent']}
-        for _, row in df.iterrows()
-    ]
+    imgData = {}
 
-    gain_loss = [
-        {'ticker': row['Ticker'], 'gain': row['Gain/Loss']}
-        for _, row in df.iterrows()
-    ]
+    try:
+        # Stock Allocation Pie Chart
+        stock_pie = go.Figure(go.Pie(
+            labels=df['Ticker'],
+            values=df['AllocationPercent'],
+            hole=0,
+            textinfo='label+percent',
+        ))
+        stock_pie.update_layout(title='Stock Allocation')
+        imgData['stockPie'] = pio.to_image(stock_pie, format='png', width=600, height=600)
+        imgData['stockPie'] = base64.b64encode(imgData['stockPie']).decode('utf-8')
 
-    treemap = [
-        {
-            'ticker': row['Ticker'],
-            'value': row['Current Value'],
-            'label': f"{row['Ticker']} (${row['Current Value']/1000:.1f}k)"
-        }
-        for _, row in df.iterrows()
-    ]
+        # Sector Allocation Pie Chart
+        sector_labels = list(sector_values.keys())
+        sector_vals = list(sector_values.values())
+        sector_pie = go.Figure(go.Pie(
+            labels=sector_labels,
+            values=sector_vals,
+            hole=0,
+            textinfo='label+percent',
+        ))
+        sector_pie.update_layout(title='Sector Allocation')
+        imgData['sectorPie'] = pio.to_image(sector_pie, format='png', width=600, height=600)
+        imgData['sectorPie'] = base64.b64encode(imgData['sectorPie']).decode('utf-8')
+
+        # Gain/Loss Horizontal Bar Chart
+        df_sorted = df.sort_values('Gain/Loss')
+        colors = ['green' if g >= 0 else 'red' for g in df_sorted['Gain/Loss']]
+        gain_bar = go.Figure(go.Bar(
+            x=df_sorted['Gain/Loss'],
+            y=df_sorted['Ticker'],
+            orientation='h',
+            marker_color=colors
+        ))
+        gain_bar.update_layout(title='Gain/Loss', yaxis=dict(autorange="reversed"))
+        imgData['gainBar'] = pio.to_image(gain_bar, format='png', width=800, height=400)
+        imgData['gainBar'] = base64.b64encode(imgData['gainBar']).decode('utf-8')
+
+        # Treemap Chart
+        treemap = go.Figure(go.Treemap(
+            labels=[f"{row['Ticker']} (${row['Current Value']/1000:.1f}k)" for _, row in df.iterrows()],
+            values=df['Current Value'],
+            marker_colors=colors,
+            textinfo="label+value"
+        ))
+        treemap.update_layout(title='Treemap')
+        imgData['treemap'] = pio.to_image(treemap, format='png', width=1000, height=600)
+        imgData['treemap'] = base64.b64encode(imgData['treemap']).decode('utf-8')
+
+    except Exception as e:
+        print(f"Chart Error: {e}")
 
     return jsonify({
         'success': True,
@@ -489,10 +561,7 @@ def portfolio_tracker_api():
         'totalGain': total_value - total_cost,
         'totalGainPercent': (total_value - total_cost) / total_cost * 100 if total_cost else 0,
         'portfolioTableData': df.to_dict(orient='records'),
-        'allocation': allocation,
-        'sectorValues': sector_values,
-        'gainLoss': gain_loss,
-        'treemap': treemap,
+        'charts': imgData,
         'marketData': get_market_data(),
         'current_user': {
             'id': current_user.id,
