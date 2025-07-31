@@ -1,4 +1,4 @@
-from flask import Flask, request, url_for, jsonify
+from flask import Flask, request, url_for, jsonify, make_response, session
 from flask_cors import CORS 
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
 import yfinance as yf
@@ -22,6 +22,8 @@ app.secret_key = "MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDCe1IMBxPm03
 
 # Email configuration
 app.config.update(
+    SESSION_COOKIE_SAMESITE='None',
+    SESSION_COOKIE_SECURE=True,  # Only if deployed over HTTPS (e.g., Vercel)
     MAIL_SERVER='smtp.sendgrid.net',
     MAIL_PORT=587,
     MAIL_USE_TLS=True,
@@ -326,7 +328,14 @@ def login():
 
     user = User(email)
     login_user(user)
-    return jsonify({'success': True, 'message': 'Logged in successfully'}), 200
+
+    response = make_response(jsonify({'success': True, 'message': 'Logged in successfully'}), 200)
+
+    # Optional: Set SameSite/secure flags for session cookie manually
+    session.permanent = True  # Optional
+    response.headers.add('Access-Control-Allow-Credentials', 'true')
+
+    return response
 
 @login_manager.unauthorized_handler
 def unauthorized():
