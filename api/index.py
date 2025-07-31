@@ -5,7 +5,8 @@ import yfinance as yf
 import plotly.graph_objs as go
 import plotly.express as px
 import plotly.io as pio
-import io
+from index import User  
+from index import load_users
 import base64
 import json
 import os
@@ -16,10 +17,14 @@ import secrets
 from collections import defaultdict
 import pandas as pd
 import logging
+from functools import wraps
 
 app = Flask(__name__)
 CORS(app, supports_credentials=True, origins=["https://turiyaportfolioplatform-9v5cm5rvi-aaryans-projects-56d3a379.vercel.app"])
 app.secret_key = "MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDCe1IMBxPm037d\nT43H/Kti/S0ZPvf0o6W7kEwk3Ma/9NpK86HHZ8QFVvzyUtvBqWgV3SyKyAzoYfou\nyIb7UIX2XB0Yl86NsiV15lPSKgWRCA8Ejh29M7dz8Yxha9qFAfwgEtCpPvyCkBSn\nd2CuEB/Hk7MFjMJkYblSNY9j87dYoWlkJv6Y3k29eyFP4eI/Ivzj0sX8A3fpn4P5\nLltlRrzG6yvaY+m/Rd9G9p9+dumVwwgvZm/CVIN3ZU1zQV168Wv4jyzT87grsuOU\nfox5RDM63HBs06EaKq1fZh3wBLruoCOYe4xUMIXY63OkujTaJQRzSZ1cOSo5iUZ1\neaIyOeQjAgMBAAECggEABLO3lZvcMtH9OLuSKXol6KRHYVtg4lTMjn7cIG4IDh8M\n4hAG4svS9PAX+IHhV0rRvemViJtymHG5+0SU4uGdA4pRl8Uf1NQwTKvvbd7fOJTx\nzAHlnSvxbQezha12YI3eOyZJTjY8I6n5Hd1ohHzWT9x10RYIoyWrtd2epGOBlM5z\ncQlARXnk3iz/0n/GqMzNJ8mn7R1S1l1t35y9jTmthiq2FzYa+anFU29bnRuE8FD3\nagFf1y0fX9QGAhbbNPeXh8bn/8qfwxB7wfWpB7NlfLZ3gLTZIV7BRXe3jJztpj15\n6iWPp6fZfDKTYeIbEK+8k/GcDluOod9Mj9WUxfKUpQKBgQDqJ7WQT/lH0eL6vioB\nNQfh25KWyvCH/NU/T9LhZdJkiNweqQ9nbc9kqRNitT3JV6tSlmc2nBESQnxErtq1\nFc4R1b9ryKMDq4iowtC/5WxvQUpYddaBZ7i5pivd2eYuVuF5aFNZHguIRpQ97v0b\n35w2Mr5XnLhoc5E2lKIQgXnS3QKBgQDUoBkBRbemBSShw02LJ8Jp3JPr2ylnDH6e\nABlzYRVihuL7wZN9RCy56sNSCZXbXJAedT6U6QlFRNdJ3BeaxXajq1gmt690VC35\neaOfR+tI2DcEToAZR6tI6ced+7UBNzB2YvkixxFWbMRVi33FubKwagk2Z5fcxB9A\nkZI9gqWi/wKBgQDOPYOSRJ6QP7HooK5mucrjiH6pCr6pSGybgzd/CCw0GMeoyej\nlfjh9Hn6qyBswydHauomE3iF2MGTzV8duML0uowL54CNrvyDiHRNUUodBCjzmXcC\nK9Vsz4w7r70qe6PFR7qB+BC4S1Iu6t1NO7tfkXpNuOBEP+ZbaLcGSsR+kQKBgCn6\njdVFeXOqskfJsmaV6/lQllfLhkoVGm6BYIT6FunD7c58smzZ5+aw5e0tfUu4469P\nwJJPzAfEBqlLbdGdyMWZj6bdPyO9dvI5RMeuwFI6depAwWO8VaHongOf7WWXCtdk\nxQFLwi2I/d5R0vwVpKTV2onGPCJXCkCKPRAt2hvrAoGBAJ8Rdy6+UUXd7YxJn8/I\nYOG47DL0mk/el0zq60JSFCXjgMrcvHdRpb8ExE+BH9EdgtDljMPQQNfIKKRpKECu\nN5XJk4iDxI+AAVGYj4Q7PgDoQhsBQ3ztYcOXxD07gOHijmqPM4i82bWzNIRNoDxK\njA8UwfdSVK+fLFZ8FHNr/ub0"
+
+logging.basicConfig(level=logging.DEBUG)  # You can use INFO or DEBUG
+logger = logging.getLogger(__name__)
 
 # Email configuration
 app.config.update(
@@ -311,49 +316,30 @@ def compute_holdings_from_transactions(transactions):
 
 @app.route('/api/login', methods=['POST'])
 def login():
-    users = load_users()
-    data = request.json
-
-    logging.debug(f"Login attempt data received: {data}")
-
+    data = request.get_json() or request.form
     email = data.get('email', '').strip().lower()
-    password = data.get('password')
+    password = data.get('password', '')
 
-    logging.debug(f"Processed email: {email}")
-    logging.debug(f"Password provided: {'Yes' if password else 'No'}")
+    logger.debug(f"Login attempt: email={email}, password_length={len(password)}")
 
-    if email not in users:
-        logging.warning(f"Login failed - email not found: {email}")
-        return jsonify({'success': False, 'error': 'Invalid credentials'}), 401
+    users = load_users()
+    user = users.get(email)
 
-    user_data = users.get(email)
+    if not user:
+        logger.warning(f"Login failed: user '{email}' not found")
+        return jsonify({'success': False, 'error': 'User not found'}), 404
 
-    logging.debug(f"User data found: {user_data}")
+    if not user.get('verified'):
+        logger.warning(f"Login failed: user '{email}' not verified")
+        return jsonify({'success': False, 'error': 'Email not verified'}), 403
 
-    if not user_data.get('verified', False):
-        logging.warning(f"Login failed - account not verified: {email}")
-        return jsonify({'success': False, 'error': 'Account not verified'}), 403
+    if not check_password_hash(user['password'], password):
+        logger.warning(f"Login failed: wrong password for user '{email}'")
+        return jsonify({'success': False, 'error': 'Incorrect password'}), 401
 
-    # To check the hashed password presence
-    stored_password_hash = user_data.get('password')
-    if not stored_password_hash:
-        logging.error(f"No password hash stored for user: {email}")
-        return jsonify({'success': False, 'error': 'Invalid credentials'}), 401
-
-    if not check_password_hash(stored_password_hash, password):
-        logging.warning(f"Login failed - invalid password for user: {email}")
-        return jsonify({'success': False, 'error': 'Invalid credentials'}), 401
-
-    user = User(email)
-    login_user(user)
-
-    logging.info(f"User logged in successfully: {email}")
-
-    response = make_response(jsonify({'success': True, 'message': 'Logged in successfully'}), 200)
-    session.permanent = True
-    response.headers.add('Access-Control-Allow-Credentials', 'true')
-
-    return response
+    logger.info(f"Login successful for user '{email}'")
+    login_user(User(email))
+    return jsonify({'success': True, 'message': 'Login successful'})
 
 @login_manager.unauthorized_handler
 def unauthorized():
