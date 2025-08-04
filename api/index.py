@@ -178,11 +178,10 @@ def get_risk_questionnaire():
     })
 
 @app.route('/api/risk/submit', methods=['POST'])
-@login_required
 def submit_risk_assessment():
     try:
         data = request.json
-        user_id = current_user.id
+        user_id = current_user.idS
         
         # Calculate total score
         total_score = 0
