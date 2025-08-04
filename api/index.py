@@ -12,18 +12,19 @@ from collections import defaultdict
 import pandas as pd
 import logging
 from functools import wraps
+import uuid  # Added for risk assessment
 
 app = Flask(__name__)
 CORS(app, supports_credentials=True, origins=["https://turiyaportfolioplatform-9v5cm5rvi-aaryans-projects-56d3a379.vercel.app"])
 app.secret_key = "MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDCe1IMBxPm037d\nT43H/Kti/S0ZPvf0o6W7kEwk3Ma/9NpK86HHZ8QFVvzyUtvBqWgV3SyKyAzoYfou\nyIb7UIX2XB0Yl86NsiV15lPSKgWRCA8Ejh29M7dz8Yxha9qFAfwgEtCpPvyCkBSn\nd2CuEB/Hk7MFjMJkYblSNY9j87dYoWlkJv6Y3k29eyFP4eI/Ivzj0sX8A3fpn4P5\nLltlRrzG6yvaY+m/Rd9G9p9+dumVwwgvZm/CVIN3ZU1zQV168Wv4jyzT87grsuOU\nfox5RDM63HBs06EaKq1fZh3wBLruoCOYe4xUMIXY63OkujTaJQRzSZ1cOSo5iUZ1\neaIyOeQjAgMBAAECggEABLO3lZvcMtH9OLuSKXol6KRHYVtg4lTMjn7cIG4IDh8M\n4hAG4svS9PAX+IHhV0rRvemViJtymHG5+0SU4uGdA4pRl8Uf1NQwTKvvbd7fOJTx\nzAHlnSvxbQezha12YI3eOyZJTjY8I6n5Hd1ohHzWT9x10RYIoyWrtd2epGOBlM5z\ncQlARXnk3iz/0n/GqMzNJ8mn7R1S1l1t35y9jTmthiq2FzYa+anFU29bnRuE8FD3\nagFf1y0fX9QGAhbbNPeXh8bn/8qfwxB7wfWpB7NlfLZ3gLTZIV7BRXe3jJztpj15\n6iWPp6fZfDKTYeIbEK+8k/GcDluOod9Mj9WUxfKUpQKBgQDqJ7WQT/lH0eL6vioB\nNQfh25KWyvCH/NU/T9LhZdJkiNweqQ9nbc9kqRNitT3JV6tSlmc2nBESQnxErtq1\nFc4R1b9ryKMDq4iowtC/5WxvQUpYddaBZ7i5pivd2eYuVuF5aFNZHguIRpQ97v0b\n35w2Mr5XnLhoc5E2lKIQgXnS3QKBgQDUoBkBRbemBSShw02LJ8Jp3JPr2ylnDH6e\nABlzYRVihuL7wZN9RCy56sNSCZXbXJAedT6U6QlFRNdJ3BeaxXajq1gmt690VC35\neaOfR+tI2DcEToAZR6tI6ced+7UBNzB2YvkixxFWbMRVi33FubKwagk2Z5fcxB9A\nkZI9gqWi/wKBgQDOPYOSRJ6QP7HooK5mucrjiH6pCr6pSGybgzd/CCw0GMeoyej\nlfjh9Hn6qyBswydHauomE3iF2MGTzV8duML0uowL54CNrvyDiHRNUUodBCjzmXcC\nK9Vsz4w7r70qe6PFR7qB+BC4S1Iu6t1NO7tfkXpNuOBEP+ZbaLcGSsR+kQKBgCn6\njdVFeXOqskfJsmaV6/lQllfLhkoVGm6BYIT6FunD7c58smzZ5+aw5e0tfUu4469P\nwJJPzAfEBqlLbdGdyMWZj6bdPyO9dvI5RMeuwFI6depAwWO8VaHongOf7WWXCtdk\nxQFLwi2I/d5R0vwVpKTV2onGPCJXCkCKPRAt2hvrAoGBAJ8Rdy6+UUXd7YxJn8/I\nYOG47DL0mk/el0zq60JSFCXjgMrcvHdRpb8ExE+BH9EdgtDljMPQQNfIKKRpKECu\nN5XJk4iDxI+AAVGYj4Q7PgDoQhsBQ3ztYcOXxD07gOHijmqPM4i82bWzNIRNoDxK\njA8UwfdSVK+fLFZ8FHNr/ub0"
 
-logging.basicConfig(level=logging.DEBUG)  # You can use INFO or DEBUG
+logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 # Email configuration
 app.config.update(
     SESSION_COOKIE_SAMESITE='None',
-    SESSION_COOKIE_SECURE=True,  # Only if deployed over HTTPS (e.g., Vercel)
+    SESSION_COOKIE_SECURE=True,
     MAIL_SERVER='smtp.sendgrid.net',
     MAIL_PORT=587,
     MAIL_USE_TLS=True,
@@ -40,6 +41,109 @@ login_manager.init_app(app)
 login_manager.login_view = 'login'
 
 USERS_FILE = 'users.json'
+RISK_DATA_DIR = os.path.join('user_data', 'risk_profiles')
+os.makedirs(RISK_DATA_DIR, exist_ok=True)
+
+# Risk assessment questionnaire structure
+RISK_QUESTIONNAIRE = {
+    "questions": [
+        {
+            "id": "q1",
+            "text": "Which of the following best describes your purpose for investing?",
+            "options": {
+                "A": {"label": "Investing for growth, with horizon of 5+ years", "score": 50},
+                "B": {"label": "Surplus funds to invest for long term wealth", "score": 40},
+                "C": {"label": "Lumpsum to invest in secured alternatives", "score": 30},
+                "D": {"label": "Create funds for retirement", "score": 20},
+                "E": {"label": "Specific objective within 5 years", "score": 10}
+            }
+        },
+        {
+            "id": "q2", 
+            "text": "Which best describes your current stage of life?",
+            "options": {
+                "A": {"label": "Single, few financial burdens", "score": 50},
+                "B": {"label": "Couple without children", "score": 40},
+                "C": {"label": "Couple with young kids", "score": 30},
+                "D": {"label": "Mature family, peak earning years", "score": 50},
+                "E": {"label": "Preparing for retirement", "score": 20},
+                "F": {"label": "Retired", "score": 10}
+            }
+        },
+        {
+            "id": "q3",
+            "text": "What returns do you expect from investments?",
+            "options": {
+                "A": {"label": "Current inflation rate", "score": 10},
+                "B": {"label": "Inflation + 2-4%", "score": 20},
+                "C": {"label": "Inflation + 5-7%", "score": 30},
+                "D": {"label": "Inflation + 8-12%", "score": 40},
+                "E": {"label": "Greater than inflation + 12%", "score": 50}
+            }
+        },
+        {
+            "id": "q4",
+            "text": "Would you consider using derivative products?",
+            "options": {
+                "A": {"label": "Yes, understand and trade for profit", "score": 50},
+                "B": {"label": "Yes, as defensive strategy and income", "score": 40},
+                "C": {"label": "Yes, as defensive strategy only", "score": 30},
+                "D": {"label": "Not familiar, would learn first", "score": 20},
+                "E": {"label": "No, too risky", "score": 10}
+            }
+        },
+        {
+            "id": "q5",
+            "text": "How long would you expect to invest before redeeming?",
+            "options": {
+                "A": {"label": "Less than 1 year", "score": 10},
+                "B": {"label": "1-3 years", "score": 20},
+                "C": {"label": "3-5 years", "score": 30},
+                "D": {"label": "5-7 years", "score": 40},
+                "E": {"label": "Longer than 7 years", "score": 50}
+            }
+        },
+        {
+            "id": "q6",
+            "text": "If portfolio decreased by 20%, you would:",
+            "options": {
+                "A": {"label": "Invest more expecting growth", "score": 50},
+                "B": {"label": "Leave investments expecting improvement", "score": 40},
+                "C": {"label": "Wait to see if improves", "score": 30},
+                "D": {"label": "Cut losses, move to defensive", "score": 20},
+                "E": {"label": "Sell all investments", "score": 10}
+            }
+        },
+        {
+            "id": "q7",
+            "text": "How stable is your current and future income?",
+            "options": {
+                "A": {"label": "Very stable", "score": 50},
+                "B": {"label": "Stable", "score": 40},
+                "C": {"label": "Somewhat stable", "score": 30},
+                "D": {"label": "Unstable", "score": 20},
+                "E": {"label": "Very unstable", "score": 10}
+            }
+        },
+        {
+            "id": "q8",
+            "text": "Do you have separate savings for major expenses?",
+            "options": {
+                "A": {"label": "No upcoming expenses except retirement", "score": 50},
+                "B": {"label": "Yes, separate savings", "score": 40},
+                "C": {"label": "Small savings for partial expenses", "score": 30},
+                "D": {"label": "No savings, use credit card", "score": 20},
+                "E": {"label": "No separate savings", "score": 10}
+            }
+        }
+    ],
+    "risk_brackets": [
+        {"name": "Defensive", "min": 0, "max": 120},
+        {"name": "Moderate", "min": 130, "max": 250},
+        {"name": "Aggressive", "min": 260, "max": 350},
+        {"name": "Very Aggressive", "min": 360, "max": 400}
+    ]
+}
 
 # User class for Flask-Login
 class User(UserMixin):
@@ -63,6 +167,94 @@ def load_users():
 def save_users(users):
     with open(USERS_FILE, 'w') as f:
         json.dump(users, f)
+
+# Risk Assessment Endpoints
+@app.route('/api/risk/questionnaire', methods=['GET'])
+@login_required
+def get_risk_questionnaire():
+    return jsonify({
+        "success": True,
+        "questionnaire": RISK_QUESTIONNAIRE
+    })
+
+@app.route('/api/risk/submit', methods=['POST'])
+@login_required
+def submit_risk_assessment():
+    try:
+        data = request.json
+        user_id = current_user.id
+        
+        # Calculate total score
+        total_score = 0
+        for q in RISK_QUESTIONNAIRE["questions"]:
+            answer = data.get("answers", {}).get(q["id"])
+            if answer in q["options"]:
+                total_score += q["options"][answer]["score"]
+        
+        # Determine risk bracket
+        risk_bracket = None
+        for bracket in RISK_QUESTIONNAIRE["risk_brackets"]:
+            if bracket["min"] <= total_score <= bracket["max"]:
+                risk_bracket = bracket["name"]
+                break
+        
+        # Prepare submission
+        submission = {
+            "id": str(uuid.uuid4()),
+            "user_id": user_id,
+            "submitted_at": datetime.utcnow().isoformat(),
+            "form_data": data,
+            "total_score": total_score,
+            "risk_bracket": risk_bracket or "Undetermined",
+            "client_details": data.get("client_details", {}),
+            "signature": data.get("signature", "")
+        }
+        
+        # Save to user's risk profile file
+        user_risk_file = os.path.join(RISK_DATA_DIR, f"{user_id}.json")
+        submissions = []
+        
+        if os.path.exists(user_risk_file):
+            with open(user_risk_file, 'r') as f:
+                submissions = json.load(f)
+        
+        submissions.append(submission)
+        
+        with open(user_risk_file, 'w') as f:
+            json.dump(submissions, f, indent=2)
+        
+        return jsonify({
+            "success": True,
+            "total_score": total_score,
+            "risk_bracket": risk_bracket
+        })
+        
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 400
+
+@app.route('/api/risk/check', methods=['GET'])
+@login_required
+def check_risk_assessment():
+    user_id = current_user.id
+    user_risk_file = os.path.join(RISK_DATA_DIR, f"{user_id}.json")
+    
+    if os.path.exists(user_risk_file):
+        with open(user_risk_file, 'r') as f:
+            submissions = json.load(f)
+        if submissions:
+            return jsonify({
+                "success": True,
+                "completed": True,
+                "latest_assessment": submissions[-1]
+            })
+    
+    return jsonify({
+        "success": True,
+        "completed": False
+    })
 
 # Fetch stock info via yfinance
 def get_stock_info(ticker):
@@ -385,6 +577,7 @@ def save_user_data(data):
 def logout():
     logout_user()
     return jsonify({'success': True, 'message': 'Logged out successfully'}), 200
+
 
 @app.route('/api/portfolio', methods=['GET'])
 @login_required
