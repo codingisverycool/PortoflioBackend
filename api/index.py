@@ -181,7 +181,7 @@ def get_risk_questionnaire():
 @login_required
 def submit_risk_assessment():
     try:
-        data = request.json
+        data = request.get_json
         user_id = current_user.id
         
         # Calculate total score
@@ -202,7 +202,7 @@ def submit_risk_assessment():
         submission = {
             "id": str(uuid.uuid4()),
             "user_id": user_id,
-            "submitted_at": datetime.utcnow().isoformat(),
+            "submitted_at": datetime.timezone.utc.isoformat(),
             "form_data": data,
             "total_score": total_score,
             "risk_bracket": risk_bracket or "Undetermined",
@@ -213,6 +213,14 @@ def submit_risk_assessment():
         # Save to user's risk profile file
         user_risk_file = os.path.join(RISK_DATA_DIR, f"{user_id}.json")
         submissions = []
+        if 'signature' not in data:
+            data['signature'] = "unsigned"
+        
+        # Required fields validation
+        required = ['answers', 'client_details']
+        if not all(field in data for field in required):
+            return jsonify({"error": "Missing required fields"}), 400
+
         
         if os.path.exists(user_risk_file):
             with open(user_risk_file, 'r') as f:
