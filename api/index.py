@@ -195,11 +195,9 @@ def get_risk_questionnaire():
 
 @app.route('/api/risk/submit', methods=['POST', 'OPTIONS'])
 def submit_risk():
-    # Dynamically get the origin from the request headers
     allowed_origin = request.headers.get('Origin', 'https://turiyaportfolioplatform.vercel.app')
-    
+
     if request.method == 'OPTIONS':
-        # Handle preflight request
         response = make_response()
         response.headers['Access-Control-Allow-Origin'] = allowed_origin
         response.headers['Access-Control-Allow-Methods'] = "POST, OPTIONS"
@@ -208,65 +206,60 @@ def submit_risk():
         return response
 
     try:
-        # Get form data
-        form_data = request.form
-        
-        # Check authentication
-        if not current_user.is_authenticated:
-            return jsonify({"success": False, "error": "User not authenticated"}), 401
+        data = request.get_json()
 
-        # Process answers
-        answers = {f"q{i+1}": form_data.get(field, "").upper() for i, field in enumerate([
+        if not current_user.is_authenticated:
+            response = jsonify({"success": False, "error": "User not authenticated"})
+            response.headers['Access-Control-Allow-Origin'] = allowed_origin
+            response.headers['Access-Control-Allow-Credentials'] = "true"
+            return response, 401
+
+        answers = {f"q{i+1}": data.get(field, "").upper() for i, field in enumerate([
             "purposeOfInvesting", "lifeStage", "expectedReturns", 
             "derivativeProducts", "investmentHorizon",
             "marketDownturnReaction", "incomeStability", "emergencySavings"
         ])}
 
-        # Calculate score
         total_score = sum(
             q["options"][answers[q["id"]]]["score"]
             for q in RISK_QUESTIONNAIRE["questions"]
             if answers.get(q["id"]) in q["options"]
         )
 
-        # Determine risk bracket
         risk_bracket = next(
             (b["name"] for b in RISK_QUESTIONNAIRE["risk_brackets"]
             if b["min"] <= total_score <= b["max"]),
             "Undetermined"
         )
 
-        # Prepare and save data
         profile_data = {
             "user_id": current_user.id,
             "submitted_at": datetime.utcnow().isoformat(),
             "client_details": {
-                "name": form_data.get("applicantName"),
-                "address": form_data.get("applicantAddress"),
-                "advisor_name": form_data.get("advisorName"),
-                "advisor_designation": form_data.get("advisorDesignation"),
-                "assessment_date": form_data.get("assessmentDate"),
-                "assessment_place": form_data.get("assessmentPlace")
+                "name": data.get("applicantName"),
+                "address": data.get("applicantAddress"),
+                "advisor_name": data.get("advisorName"),
+                "advisor_designation": data.get("advisorDesignation"),
+                "assessment_date": data.get("assessmentDate"),
+                "assessment_place": data.get("assessmentPlace")
             },
-            "signature": form_data.get("applicantSignature"),
+            "signature": data.get("applicantSignature"),
             "total_score": total_score,
             "risk_bracket": risk_bracket,
-            "interested_investments": json.loads(form_data.get("interestedInvestments", "[]")),
+            "interested_investments": data.get("interestedInvestments", []),
             "answers": answers
         }
 
-        # Save JSON file
         os.makedirs(os.path.dirname(profile_path := get_risk_profile_path(current_user.id)), exist_ok=True)
         with open(profile_path, 'w') as f:
             json.dump(profile_data, f)
 
-        # Return response
         response = jsonify({
             "success": True,
             "total_score": total_score,
             "risk_bracket": risk_bracket
         })
-        response.headers['Access-Control-Allow-Origin'] = "https://your-frontend.vercel.app"
+        response.headers['Access-Control-Allow-Origin'] = allowed_origin
         response.headers['Access-Control-Allow-Credentials'] = "true"
         return response
 
@@ -276,10 +269,9 @@ def submit_risk():
             "success": False,
             "error": "Failed to process submission"
         })
-        response.headers['Access-Control-Allow-Origin'] = "https://your-frontend.vercel.app"
+        response.headers['Access-Control-Allow-Origin'] = allowed_origin
         response.headers['Access-Control-Allow-Credentials'] = "true"
         return response, 500
-
 
 @app.route('/api/risk/check', methods=['POST'])
 @login_required
