@@ -4,7 +4,7 @@ from flask_login import LoginManager, UserMixin, login_user, login_required, log
 import yfinance as yf
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_mail import Mail, Message
 import secrets
@@ -13,12 +13,13 @@ import pandas as pd
 import logging
 from functools import wraps
 import uuid  # Added for risk assessment
+import jwt 
 
 app = Flask(__name__)
 CORS(app,supports_credentials=True,)
 
 app.secret_key = "MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDCe1IMBxPm037d\nT43H/Kti/S0ZPvf0o6W7kEwk3Ma/9NpK86HHZ8QFVvzyUtvBqWgV3SyKyAzoYfou\nyIb7UIX2XB0Yl86NsiV15lPSKgWRCA8Ejh29M7dz8Yxha9qFAfwgEtCpPvyCkBSn\nd2CuEB/Hk7MFjMJkYblSNY9j87dYoWlkJv6Y3k29eyFP4eI/Ivzj0sX8A3fpn4P5\nLltlRrzG6yvaY+m/Rd9G9p9+dumVwwgvZm/CVIN3ZU1zQV168Wv4jyzT87grsuOU\nfox5RDM63HBs06EaKq1fZh3wBLruoCOYe4xUMIXY63OkujTaJQRzSZ1cOSo5iUZ1\neaIyOeQjAgMBAAECggEABLO3lZvcMtH9OLuSKXol6KRHYVtg4lTMjn7cIG4IDh8M\n4hAG4svS9PAX+IHhV0rRvemViJtymHG5+0SU4uGdA4pRl8Uf1NQwTKvvbd7fOJTx\nzAHlnSvxbQezha12YI3eOyZJTjY8I6n5Hd1ohHzWT9x10RYIoyWrtd2epGOBlM5z\ncQlARXnk3iz/0n/GqMzNJ8mn7R1S1l1t35y9jTmthiq2FzYa+anFU29bnRuE8FD3\nagFf1y0fX9QGAhbbNPeXh8bn/8qfwxB7wfWpB7NlfLZ3gLTZIV7BRXe3jJztpj15\n6iWPp6fZfDKTYeIbEK+8k/GcDluOod9Mj9WUxfKUpQKBgQDqJ7WQT/lH0eL6vioB\nNQfh25KWyvCH/NU/T9LhZdJkiNweqQ9nbc9kqRNitT3JV6tSlmc2nBESQnxErtq1\nFc4R1b9ryKMDq4iowtC/5WxvQUpYddaBZ7i5pivd2eYuVuF5aFNZHguIRpQ97v0b\n35w2Mr5XnLhoc5E2lKIQgXnS3QKBgQDUoBkBRbemBSShw02LJ8Jp3JPr2ylnDH6e\nABlzYRVihuL7wZN9RCy56sNSCZXbXJAedT6U6QlFRNdJ3BeaxXajq1gmt690VC35\neaOfR+tI2DcEToAZR6tI6ced+7UBNzB2YvkixxFWbMRVi33FubKwagk2Z5fcxB9A\nkZI9gqWi/wKBgQDOPYOSRJ6QP7HooK5mucrjiH6pCr6pSGybgzd/CCw0GMeoyej\nlfjh9Hn6qyBswydHauomE3iF2MGTzV8duML0uowL54CNrvyDiHRNUUodBCjzmXcC\nK9Vsz4w7r70qe6PFR7qB+BC4S1Iu6t1NO7tfkXpNuOBEP+ZbaLcGSsR+kQKBgCn6\njdVFeXOqskfJsmaV6/lQllfLhkoVGm6BYIT6FunD7c58smzZ5+aw5e0tfUu4469P\nwJJPzAfEBqlLbdGdyMWZj6bdPyO9dvI5RMeuwFI6depAwWO8VaHongOf7WWXCtdk\nxQFLwi2I/d5R0vwVpKTV2onGPCJXCkCKPRAt2hvrAoGBAJ8Rdy6+UUXd7YxJn8/I\nYOG47DL0mk/el0zq60JSFCXjgMrcvHdRpb8ExE+BH9EdgtDljMPQQNfIKKRpKECu\nN5XJk4iDxI+AAVGYj4Q7PgDoQhsBQ3ztYcOXxD07gOHijmqPM4i82bWzNIRNoDxK\njA8UwfdSVK+fLFZ8FHNr/ub0"
-
+JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
@@ -162,13 +163,44 @@ def get_risk_profile_path(user_id):
     os.makedirs(user_dir, exist_ok=True)  # This works because it's user-specific
     return os.path.join(user_dir, 'risk_profile.json')
 
-def login_required_except_options(f):
+def generate_jwt(user_id):
+    payload = {
+        "user_id": user_id,
+        "exp": datetime.utcnow() + timedelta(days=1),
+        "iat": datetime.utcnow()
+    }
+    token = jwt.encode(payload, JWT_SECRET_KEY, algorithm="HS256")
+    return token
+
+def verify_jwt(token):
+    try:
+        payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=["HS256"])
+        return payload["user_id"]
+    except jwt.ExpiredSignatureError:
+        return None
+    except jwt.InvalidTokenError:
+        return None
+    
+def token_required(f):
     @wraps(f)
-    def decorated_function(*args, **kwargs):
-        if request.method == 'OPTIONS':
-            return jsonify({'success': True})  # Allow OPTIONS without auth
-        return f(*args, **kwargs)
-    return decorated_function
+    def decorated(*args, **kwargs):
+        token = None
+        auth_header = request.headers.get('Authorization')
+
+        if auth_header and auth_header.startswith('Bearer '):
+            token = auth_header.split(' ')[1]
+
+        if not token:
+            return jsonify({'success': False, 'error': 'Token is missing!'}), 401
+
+        user_id = verify_jwt(token)
+        if not user_id:
+            return jsonify({'success': False, 'error': 'Invalid or expired token!'}), 401
+
+        # Pass user_id to the route
+        return f(user_id, *args, **kwargs)
+
+    return decorated
 
 @login_manager.user_loader
 def load_user(user_id):
@@ -201,18 +233,28 @@ def submit_risk():
         response = make_response()
         response.headers['Access-Control-Allow-Origin'] = allowed_origin
         response.headers['Access-Control-Allow-Methods'] = "POST, OPTIONS"
-        response.headers['Access-Control-Allow-Headers'] = "Content-Type"
+        response.headers['Access-Control-Allow-Headers'] = "Content-Type, Authorization"
         response.headers['Access-Control-Allow-Credentials'] = "true"
         return response
 
     try:
-        data = request.get_json()
-
-        if not current_user.is_authenticated:
-            response = jsonify({"success": False, "error": "User not authenticated"})
+        # Extract and verify JWT token from Authorization header
+        auth_header = request.headers.get('Authorization', None)
+        if not auth_header or not auth_header.startswith("Bearer "):
+            response = jsonify({"success": False, "error": "Authorization header missing or malformed"})
             response.headers['Access-Control-Allow-Origin'] = allowed_origin
             response.headers['Access-Control-Allow-Credentials'] = "true"
             return response, 401
+
+        token = auth_header.split(" ")[1]
+        user_id = verify_jwt(token)
+        if not user_id:
+            response = jsonify({"success": False, "error": "Invalid or expired token"})
+            response.headers['Access-Control-Allow-Origin'] = allowed_origin
+            response.headers['Access-Control-Allow-Credentials'] = "true"
+            return response, 401
+
+        data = request.get_json()
 
         answers = {f"q{i+1}": data.get(field, "").upper() for i, field in enumerate([
             "purposeOfInvesting", "lifeStage", "expectedReturns", 
@@ -233,7 +275,7 @@ def submit_risk():
         )
 
         profile_data = {
-            "user_id": current_user.id,
+            "user_id": user_id,
             "submitted_at": datetime.utcnow().isoformat(),
             "client_details": {
                 "name": data.get("applicantName"),
@@ -250,7 +292,7 @@ def submit_risk():
             "answers": answers
         }
 
-        os.makedirs(os.path.dirname(profile_path := get_risk_profile_path(current_user.id)), exist_ok=True)
+        os.makedirs(os.path.dirname(profile_path := get_risk_profile_path(user_id)), exist_ok=True)
         with open(profile_path, 'w') as f:
             json.dump(profile_data, f)
 
@@ -272,6 +314,7 @@ def submit_risk():
         response.headers['Access-Control-Allow-Origin'] = allowed_origin
         response.headers['Access-Control-Allow-Credentials'] = "true"
         return response, 500
+
 
 @app.route('/api/risk/check', methods=['POST'])
 @login_required
@@ -520,8 +563,16 @@ def login():
         return jsonify({'success': False, 'error': 'Incorrect password'}), 401
 
     logger.info(f"Login successful for user '{email}'")
-    login_user(User(email))
-    return jsonify({'success': True, 'message': 'Login successful'})
+
+    # Generate JWT token using user_id (or email if you prefer)
+    user_id = email  # or user['id'] if you have unique IDs
+    token = generate_jwt(user_id)
+
+    return jsonify({
+        'success': True,
+        'message': 'Login successful',
+        'token': token
+    })
 
 @login_manager.unauthorized_handler
 def unauthorized():
