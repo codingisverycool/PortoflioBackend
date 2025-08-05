@@ -178,6 +178,15 @@ def verify_jwt(token):
 def token_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
+        # Handle OPTIONS preflight right away
+        if request.method == 'OPTIONS':
+            response = make_response()
+            response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', 'https://turiyaportfolioplatform.vercel.app')
+            response.headers['Access-Control-Allow-Methods'] = "POST, OPTIONS"
+            response.headers['Access-Control-Allow-Headers'] = "Content-Type, Authorization"
+            response.headers['Access-Control-Allow-Credentials'] = "true"
+            return response
+
         token = None
         auth_header = request.headers.get('Authorization')
 
@@ -185,13 +194,21 @@ def token_required(f):
             token = auth_header.split(' ')[1]
 
         if not token:
-            return jsonify({'success': False, 'error': 'Token is missing!'}), 401
+            response = jsonify({'success': False, 'error': 'Token is missing!'})
+            response.status_code = 401
+            response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', 'https://turiyaportfolioplatform.vercel.app')
+            response.headers['Access-Control-Allow-Credentials'] = 'true'
+            return response
 
         user_id = verify_jwt(token)
         if not user_id:
-            return jsonify({'success': False, 'error': 'Invalid or expired token!'}), 401
+            response = jsonify({'success': False, 'error': 'Invalid or expired token!'})
+            response.status_code = 401
+            response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', 'https://turiyaportfolioplatform.vercel.app')
+            response.headers['Access-Control-Allow-Credentials'] = 'true'
+            return response
 
-        # Pass user_id to the route
+        # Pass user_id to the wrapped route function
         return f(user_id, *args, **kwargs)
 
     return decorated
