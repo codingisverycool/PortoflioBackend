@@ -549,15 +549,18 @@ def login():
 
     logger.info(f"Login successful for user '{email}'")
 
-    # Generate JWT token using user_id (or email if you prefer)
-    user_id = email  # or user['id'] if you have unique IDs
-    token = generate_jwt(user_id)
+    # Log user in with Flask-Login session
+    login_user(User(email))
+
+    # Generate JWT token (using email as user_id)
+    token = generate_jwt(email)
 
     return jsonify({
         'success': True,
         'message': 'Login successful',
         'token': token
     })
+
 
 @login_manager.unauthorized_handler
 def unauthorized():
