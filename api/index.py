@@ -202,30 +202,34 @@ def get_risk_questionnaire():
     })
 
 @app.route('/api/risk/submit', methods=['POST', 'OPTIONS'])
-@cross_origin(supports_credentials=True)
 def submit_risk():
     if request.method == 'OPTIONS':
         # Handle preflight request
         response = make_response()
-        response.headers.add("Access-Control-Allow-Origin", "https://turiyaportfolioplatform-git-master-aaryans-projects-56d3a379.vercel.app")
-        response.headers.add("Access-Control-Allow-Headers", "Content-Type")
-        response.headers.add("Access-Control-Allow-Methods", "POST")
-        response.headers.add("Access-Control-Allow-Credentials", "true")
+        response.headers['Access-Control-Allow-Origin'] = "https://turiyaportfolioplatform-git-master-aaryans-projects-56d3a379.vercel.app"
+        response.headers['Access-Control-Allow-Methods'] = "POST, OPTIONS"
+        response.headers['Access-Control-Allow-Headers'] = "Content-Type"
+        response.headers['Access-Control-Allow-Credentials'] = "true"
         return response
-    try:
-        data = request.get_json()
-        user_id = current_user.id  # Make sure current_user is set by flask-login
 
-        # Extract answers
+    try:
+        # Get form data instead of JSON
+        form_data = request.form
+        
+        # Get current user (ensure user is logged in)
+        if not current_user.is_authenticated:
+            return jsonify({"success": False, "error": "User not authenticated"}), 401
+
+        # Parse the form data
         answers = {
-            "q1": data.get("purposeOfInvesting", "").upper(),
-            "q2": data.get("lifeStage", "").upper(),
-            "q3": data.get("expectedReturns", "").upper(),
-            "q4": data.get("derivativeProducts", "").upper(),
-            "q5": data.get("investmentHorizon", "").upper(),
-            "q6": data.get("marketDownturnReaction", "").upper(),
-            "q7": data.get("incomeStability", "").upper(),
-            "q8": data.get("emergencySavings", "").upper()
+            "q1": form_data.get("purposeOfInvesting", "").upper(),
+            "q2": form_data.get("lifeStage", "").upper(),
+            "q3": form_data.get("expectedReturns", "").upper(),
+            "q4": form_data.get("derivativeProducts", "").upper(),
+            "q5": form_data.get("investmentHorizon", "").upper(),
+            "q6": form_data.get("marketDownturnReaction", "").upper(),
+            "q7": form_data.get("incomeStability", "").upper(),
+            "q8": form_data.get("emergencySavings", "").upper()
         }
 
         # Calculate total score
@@ -242,41 +246,62 @@ def submit_risk():
                 risk_bracket = bracket["name"]
                 break
 
+        # Parse interested investments (comes as JSON string)
+        interested_investments = []
+        if form_data.get("interestedInvestments"):
+            try:
+                interested_investments = json.loads(form_data.get("interestedInvestments"))
+            except json.JSONDecodeError:
+                interested_investments = []
+
         # Prepare profile data to save
         profile_data = {
-            "user_id": user_id,
+            "user_id": current_user.id,
             "submitted_at": datetime.utcnow().isoformat(),
             "client_details": {
-                "name": data.get("applicantName", ""),
-                "address": data.get("applicantAddress", ""),
-                "advisor_name": data.get("advisorName", ""),
-                "advisor_designation": data.get("advisorDesignation", ""),
-                "assessment_date": data.get("assessmentDate", ""),
-                "assessment_place": data.get("assessmentPlace", "")
+                "name": form_data.get("applicantName", ""),
+                "address": form_data.get("applicantAddress", ""),
+                "advisor_name": form_data.get("advisorName", ""),
+                "advisor_designation": form_data.get("advisorDesignation", ""),
+                "assessment_date": form_data.get("assessmentDate", ""),
+                "assessment_place": form_data.get("assessmentPlace", "")
             },
-            "signature": data.get("applicantSignature", ""),
+            "signature": form_data.get("applicantSignature", ""),
             "total_score": total_score,
             "risk_bracket": risk_bracket,
-            "interested_investments": data.get("interestedInvestments", []),
+            "interested_investments": interested_investments,
             "answers": answers
         }
 
-        profile_path = get_risk_profile_path(user_id)
+        # Save to user's risk profile
+        profile_path = get_risk_profile_path(current_user.id)
+        os.makedirs(os.path.dirname(profile_path), exist_ok=True)
         with open(profile_path, 'w') as f:
             json.dump(profile_data, f, indent=2)
 
-        return jsonify({
+        # Return success response
+        response = jsonify({
             "success": True,
             "total_score": total_score,
             "risk_bracket": risk_bracket
         })
+        
+        # Set CORS headers for the actual response
+        response.headers['Access-Control-Allow-Origin'] = "https://turiyaportfolioplatform-git-master-aaryans-projects-56d3a379.vercel.app"
+        response.headers['Access-Control-Allow-Credentials'] = "true"
+        
+        return response
 
     except Exception as e:
         logger.error(f"Risk assessment submission error: {str(e)}", exc_info=True)
-        return jsonify({
+        response = jsonify({
             "success": False,
             "error": "Failed to process risk assessment"
-        }), 500
+        })
+        response.headers['Access-Control-Allow-Origin'] = "https://turiyaportfolioplatform-git-master-aaryans-projects-56d3a379.vercel.app"
+        response.headers['Access-Control-Allow-Credentials'] = "true"
+        return response, 500
+
 
 @app.route('/api/risk/check', methods=['POST'])
 @login_required
