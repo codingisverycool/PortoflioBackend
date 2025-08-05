@@ -194,18 +194,16 @@ def get_risk_questionnaire():
     })
 
 @app.route('/api/risk/submit', methods=['POST', 'OPTIONS'])
-@cross_origin(
-    origins="https://turiyaportfolioplatform-khggb9aj5-aaryans-projects-56d3a379.vercel.app",
-    supports_credentials=True,
-    methods=["POST", "OPTIONS"],
-    allow_headers=["Content-Type"]
-)
-@login_required_except_options
-def submit_risk_assessment():
+def submit_risk():
     try:
-        data = request.get_json() or request.form
-        user_id = current_user.id
+        if request.method == 'OPTIONS':
+            # Preflight request - respond with 200 OK and CORS headers will be added globally by flask-cors
+            return '', 200
 
+        data = request.get_json()
+        user_id = current_user.id  # Make sure current_user is set by flask-login
+
+        # Extract answers
         answers = {
             "q1": data.get("purposeOfInvesting", "").upper(),
             "q2": data.get("lifeStage", "").upper(),
@@ -217,18 +215,21 @@ def submit_risk_assessment():
             "q8": data.get("emergencySavings", "").upper()
         }
 
+        # Calculate total score
         total_score = 0
         for q in RISK_QUESTIONNAIRE["questions"]:
             answer = answers.get(q["id"])
             if answer and answer in q["options"]:
                 total_score += q["options"][answer]["score"]
 
+        # Determine risk bracket
         risk_bracket = "Undetermined"
         for bracket in RISK_QUESTIONNAIRE["risk_brackets"]:
             if bracket["min"] <= total_score <= bracket["max"]:
                 risk_bracket = bracket["name"]
                 break
 
+        # Prepare profile data to save
         profile_data = {
             "user_id": user_id,
             "submitted_at": datetime.utcnow().isoformat(),
