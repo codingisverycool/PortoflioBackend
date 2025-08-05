@@ -184,11 +184,11 @@ def get_risk_questionnaire():
         "questionnaire": RISK_QUESTIONNAIRE
     })
 
-@app.route('/api/risk/submit', methods=['POST'])
+@app.route('/api/risk/submit', methods=['GET'])
 @login_required
 def submit_risk_assessment():
     try:
-        data = request.json
+        data = request.get_json() or request.form
         user_id = current_user.id
         
         # Transform frontend data to match questionnaire format
@@ -254,7 +254,7 @@ def submit_risk_assessment():
             "error": "Failed to process risk assessment"
         }), 500
 
-@app.route('/api/risk/check', methods=['GET'])
+@app.route('/api/risk/check', methods=['POST'])
 @login_required
 def check_risk_assessment():
     user_id = current_user.id
