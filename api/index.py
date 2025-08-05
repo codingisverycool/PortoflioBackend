@@ -191,29 +191,52 @@ def submit_risk_assessment():
         data = request.json
         user_id = current_user.id
         
-        # Calculate score (keep your existing logic)
+        # Transform frontend data to match questionnaire format
+        answers = {
+            "q1": data.get("purposeOfInvesting", "").upper(),
+            "q2": data.get("lifeStage", "").upper(),
+            "q3": data.get("expectedReturns", "").upper(),
+            "q4": data.get("derivativeProducts", "").upper(),
+            "q5": data.get("investmentHorizon", "").upper(),
+            "q6": data.get("marketDownturnReaction", "").upper(),
+            "q7": data.get("incomeStability", "").upper(),
+            "q8": data.get("emergencySavings", "").upper()
+        }
+
+        # Calculate score using questionnaire structure
         total_score = 0
         for q in RISK_QUESTIONNAIRE["questions"]:
-            answer = data["answers"].get(q["id"])
-            if answer and answer.upper() in q["options"]:
-                total_score += q["options"][answer.upper()]["score"]
+            answer = answers.get(q["id"])
+            if answer and answer in q["options"]:
+                total_score += q["options"][answer]["score"]
 
-        # Determine risk bracket (keep your existing logic)
+        # Determine risk bracket
         risk_bracket = "Undetermined"
         for bracket in RISK_QUESTIONNAIRE["risk_brackets"]:
             if bracket["min"] <= total_score <= bracket["max"]:
                 risk_bracket = bracket["name"]
                 break
 
-        # Prepare and save data - CHANGED SECTION
+        # Save assessment data
         profile_data = {
             "user_id": user_id,
             "submitted_at": datetime.utcnow().isoformat(),
-            "form_data": data,
+            "client_details": {
+                "name": data.get("applicantName", ""),
+                "address": data.get("applicantAddress", ""),
+                "advisor_name": data.get("advisorName", ""),
+                "advisor_designation": data.get("advisorDesignation", ""),
+                "assessment_date": data.get("assessmentDate", ""),
+                "assessment_place": data.get("assessmentPlace", "")
+            },
+            "signature": data.get("applicantSignature", ""),
             "total_score": total_score,
-            "risk_bracket": risk_bracket
+            "risk_bracket": risk_bracket,
+            "interested_investments": data.get("interestedInvestments", []),
+            "answers": answers
         }
-        
+
+        # Save to user's risk profile
         profile_path = get_risk_profile_path(user_id)
         with open(profile_path, 'w') as f:
             json.dump(profile_data, f, indent=2)
@@ -223,12 +246,12 @@ def submit_risk_assessment():
             "total_score": total_score,
             "risk_bracket": risk_bracket
         })
-        
+
     except Exception as e:
-        logger.error(f"Risk assessment error: {str(e)}")
+        logger.error(f"Risk assessment submission error: {str(e)}", exc_info=True)
         return jsonify({
             "success": False,
-            "error": str(e)
+            "error": "Failed to process risk assessment"
         }), 500
 
 @app.route('/api/risk/check', methods=['GET'])
