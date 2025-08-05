@@ -203,10 +203,19 @@ def get_risk_questionnaire():
 @app.route('/api/risk/submit', methods=['POST', 'OPTIONS'])
 @login_required_except_options
 def submit_risk_assessment():
+    # Handle CORS preflight OPTIONS request
+    if request.method == 'OPTIONS':
+        response = make_response(jsonify({"success": True}), 200)
+        response.headers["Access-Control-Allow-Origin"] = "https://turiyaportfolioplatform-khggb9aj5-aaryans-projects-56d3a379.vercel.app"
+        response.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        return response
+
     try:
         data = request.get_json() or request.form
         user_id = current_user.id
-        
+
         # Transform frontend data to match questionnaire format
         answers = {
             "q1": data.get("purposeOfInvesting", "").upper(),
@@ -257,18 +266,25 @@ def submit_risk_assessment():
         with open(profile_path, 'w') as f:
             json.dump(profile_data, f, indent=2)
 
-        return jsonify({
+        # Response with CORS headers
+        response = jsonify({
             "success": True,
             "total_score": total_score,
             "risk_bracket": risk_bracket
         })
+        response.headers["Access-Control-Allow-Origin"] = "https://turiyaportfolioplatform-khggb9aj5-aaryans-projects-56d3a379.vercel.app"
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        return response
 
     except Exception as e:
         logger.error(f"Risk assessment submission error: {str(e)}", exc_info=True)
-        return jsonify({
+        response = jsonify({
             "success": False,
             "error": "Failed to process risk assessment"
-        }), 500
+        })
+        response.headers["Access-Control-Allow-Origin"] = "https://turiyaportfolioplatform-khggb9aj5-aaryans-projects-56d3a379.vercel.app"
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        return response, 500
 
 @app.route('/api/risk/check', methods=['POST'])
 @login_required
