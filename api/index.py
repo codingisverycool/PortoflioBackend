@@ -195,10 +195,13 @@ def get_risk_questionnaire():
 
 @app.route('/api/risk/submit', methods=['POST', 'OPTIONS'])
 def submit_risk():
+    # Dynamically get the origin from the request headers
+    allowed_origin = request.headers.get('Origin', 'https://turiyaportfolioplatform.vercel.app')
+    
     if request.method == 'OPTIONS':
         # Handle preflight request
         response = make_response()
-        response.headers['Access-Control-Allow-Origin'] = "https://turiyaportfolioplatform.vercel.app"
+        response.headers['Access-Control-Allow-Origin'] = allowed_origin
         response.headers['Access-Control-Allow-Methods'] = "POST, OPTIONS"
         response.headers['Access-Control-Allow-Headers'] = "Content-Type"
         response.headers['Access-Control-Allow-Credentials'] = "true"
