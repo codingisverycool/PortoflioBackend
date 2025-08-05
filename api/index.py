@@ -1,5 +1,5 @@
 from flask import Flask, request, url_for, jsonify, make_response, session
-from flask_cors import CORS 
+from flask_cors import CORS, cross_origin
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
 import yfinance as yf
 import json
@@ -194,22 +194,18 @@ def get_risk_questionnaire():
     })
 
 @app.route('/api/risk/submit', methods=['POST', 'OPTIONS'])
+@cross_origin(
+    origins="https://turiyaportfolioplatform-khggb9aj5-aaryans-projects-56d3a379.vercel.app",
+    supports_credentials=True,
+    methods=["POST", "OPTIONS"],
+    allow_headers=["Content-Type"]
+)
 @login_required_except_options
 def submit_risk_assessment():
-    # Handle CORS preflight OPTIONS request
-    if request.method == 'OPTIONS':
-        response = make_response(jsonify({"success": True}), 200)
-        response.headers["Access-Control-Allow-Origin"] = "https://turiyaportfolioplatform-khggb9aj5-aaryans-projects-56d3a379.vercel.app"
-        response.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
-        response.headers["Access-Control-Allow-Headers"] = "Content-Type"
-        response.headers["Access-Control-Allow-Credentials"] = "true"
-        return response
-
     try:
         data = request.get_json() or request.form
         user_id = current_user.id
 
-        # Transform frontend data to match questionnaire format
         answers = {
             "q1": data.get("purposeOfInvesting", "").upper(),
             "q2": data.get("lifeStage", "").upper(),
@@ -221,21 +217,18 @@ def submit_risk_assessment():
             "q8": data.get("emergencySavings", "").upper()
         }
 
-        # Calculate score using questionnaire structure
         total_score = 0
         for q in RISK_QUESTIONNAIRE["questions"]:
             answer = answers.get(q["id"])
             if answer and answer in q["options"]:
                 total_score += q["options"][answer]["score"]
 
-        # Determine risk bracket
         risk_bracket = "Undetermined"
         for bracket in RISK_QUESTIONNAIRE["risk_brackets"]:
             if bracket["min"] <= total_score <= bracket["max"]:
                 risk_bracket = bracket["name"]
                 break
 
-        # Save assessment data
         profile_data = {
             "user_id": user_id,
             "submitted_at": datetime.utcnow().isoformat(),
@@ -254,30 +247,22 @@ def submit_risk_assessment():
             "answers": answers
         }
 
-        # Save to user's risk profile
         profile_path = get_risk_profile_path(user_id)
         with open(profile_path, 'w') as f:
             json.dump(profile_data, f, indent=2)
 
-        # Response with CORS headers
-        response = jsonify({
+        return jsonify({
             "success": True,
             "total_score": total_score,
             "risk_bracket": risk_bracket
         })
-        response.headers["Access-Control-Allow-Origin"] = "https://turiyaportfolioplatform-khggb9aj5-aaryans-projects-56d3a379.vercel.app"
-        response.headers["Access-Control-Allow-Credentials"] = "true"
-        return response
 
     except Exception as e:
         logger.error(f"Risk assessment submission error: {str(e)}", exc_info=True)
-        response = jsonify({
+        return jsonify({
             "success": False,
             "error": "Failed to process risk assessment"
-        })
-        response.headers["Access-Control-Allow-Origin"] = "https://turiyaportfolioplatform-khggb9aj5-aaryans-projects-56d3a379.vercel.app"
-        response.headers["Access-Control-Allow-Credentials"] = "true"
-        return response, 500
+        }), 500
 
 @app.route('/api/risk/check', methods=['POST'])
 @login_required
