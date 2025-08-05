@@ -41,8 +41,9 @@ login_manager.init_app(app)
 login_manager.login_view = 'login'
 
 USERS_FILE = 'users.json'
-RISK_DATA_DIR = os.path.join('user_data', 'risk_profiles')
-os.makedirs(RISK_DATA_DIR, exist_ok=True)
+def get_risk_profile_path(user_id):
+    return f'user_data/{user_id}/risk_profile.json' 
+
 
 # Risk assessment questionnaire structure
 RISK_QUESTIONNAIRE = {
@@ -154,6 +155,12 @@ class User(UserMixin):
         self.email = email
         self.verified = user_data.get('verified', False)
 
+def get_risk_profile_path(user_id):
+    """Returns user-specific risk profile path matching transaction data pattern"""
+    user_dir = os.path.join('user_data', user_id)
+    os.makedirs(user_dir, exist_ok=True)  # This works because it's user-specific
+    return os.path.join(user_dir, 'risk_profile.json')
+
 @login_manager.user_loader
 def load_user(user_id):
     return User(user_id)
@@ -181,56 +188,36 @@ def get_risk_questionnaire():
 @login_required
 def submit_risk_assessment():
     try:
-        data = request.get_json
+        data = request.json
         user_id = current_user.id
         
-        # Calculate total score
+        # Calculate score (keep your existing logic)
         total_score = 0
         for q in RISK_QUESTIONNAIRE["questions"]:
-            answer = data.get("answers", {}).get(q["id"])
-            if answer in q["options"]:
-                total_score += q["options"][answer]["score"]
-        
-        # Determine risk bracket
-        risk_bracket = None
+            answer = data["answers"].get(q["id"])
+            if answer and answer.upper() in q["options"]:
+                total_score += q["options"][answer.upper()]["score"]
+
+        # Determine risk bracket (keep your existing logic)
+        risk_bracket = "Undetermined"
         for bracket in RISK_QUESTIONNAIRE["risk_brackets"]:
             if bracket["min"] <= total_score <= bracket["max"]:
                 risk_bracket = bracket["name"]
                 break
-        
-        # Prepare submission
-        submission = {
-            "id": str(uuid.uuid4()),
+
+        # Prepare and save data - CHANGED SECTION
+        profile_data = {
             "user_id": user_id,
-            "submitted_at": datetime.timezone.utc.isoformat(),
+            "submitted_at": datetime.utcnow().isoformat(),
             "form_data": data,
             "total_score": total_score,
-            "risk_bracket": risk_bracket or "Undetermined",
-            "client_details": data.get("client_details", {}),
-            "signature": data.get("signature", "")
+            "risk_bracket": risk_bracket
         }
         
-        # Save to user's risk profile file
-        user_risk_file = os.path.join(RISK_DATA_DIR, f"{user_id}.json")
-        submissions = []
-        if 'signature' not in data:
-            data['signature'] = "unsigned"
-        
-        # Required fields validation
-        required = ['answers', 'client_details']
-        if not all(field in data for field in required):
-            return jsonify({"error": "Missing required fields"}), 400
+        profile_path = get_risk_profile_path(user_id)
+        with open(profile_path, 'w') as f:
+            json.dump(profile_data, f, indent=2)
 
-        
-        if os.path.exists(user_risk_file):
-            with open(user_risk_file, 'r') as f:
-                submissions = json.load(f)
-        
-        submissions.append(submission)
-        
-        with open(user_risk_file, 'w') as f:
-            json.dump(submissions, f, indent=2)
-        
         return jsonify({
             "success": True,
             "total_score": total_score,
@@ -238,26 +225,26 @@ def submit_risk_assessment():
         })
         
     except Exception as e:
+        logger.error(f"Risk assessment error: {str(e)}")
         return jsonify({
             "success": False,
             "error": str(e)
-        }), 400
+        }), 500
 
 @app.route('/api/risk/check', methods=['GET'])
 @login_required
 def check_risk_assessment():
     user_id = current_user.id
-    user_risk_file = os.path.join(RISK_DATA_DIR, f"{user_id}.json")
+    profile_path = get_risk_profile_path(user_id)
     
-    if os.path.exists(user_risk_file):
-        with open(user_risk_file, 'r') as f:
-            submissions = json.load(f)
-        if submissions:
-            return jsonify({
-                "success": True,
-                "completed": True,
-                "latest_assessment": submissions[-1]
-            })
+    if os.path.exists(profile_path):
+        with open(profile_path, 'r') as f:
+            data = json.load(f)
+        return jsonify({
+            "success": True,
+            "completed": True,
+            "latest_assessment": data
+        })
     
     return jsonify({
         "success": True,
