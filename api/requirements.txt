@@ -5,6 +5,8 @@ Werkzeug
 yfinance
 pandas
 flask-mail
+PyJWT
+
 
 
 

@@ -157,12 +157,6 @@ class User(UserMixin):
         self.email = email
         self.verified = user_data.get('verified', False)
 
-def get_risk_profile_path(user_id):
-    """Returns user-specific risk profile path matching transaction data pattern"""
-    user_dir = os.path.join('user_data', user_id)
-    os.makedirs(user_dir, exist_ok=True)  # This works because it's user-specific
-    return os.path.join(user_dir, 'risk_profile.json')
-
 def generate_jwt(user_id):
     payload = {
         "user_id": user_id,
@@ -226,54 +220,49 @@ def get_risk_questionnaire():
     })
 
 @app.route('/api/risk/submit', methods=['POST', 'OPTIONS'])
-def submit_risk():
-    allowed_origin = request.headers.get('Origin', 'https://turiyaportfolioplatform.vercel.app')
-
+@token_required
+def submit_risk(user_id):
+    # Handle OPTIONS for CORS preflight
     if request.method == 'OPTIONS':
         response = make_response()
-        response.headers['Access-Control-Allow-Origin'] = allowed_origin
+        response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', 'https://turiyaportfolioplatform.vercel.app')
         response.headers['Access-Control-Allow-Methods'] = "POST, OPTIONS"
         response.headers['Access-Control-Allow-Headers'] = "Content-Type, Authorization"
         response.headers['Access-Control-Allow-Credentials'] = "true"
         return response
 
     try:
-        # Extract and verify JWT token from Authorization header
-        auth_header = request.headers.get('Authorization', None)
-        if not auth_header or not auth_header.startswith("Bearer "):
-            response = jsonify({"success": False, "error": "Authorization header missing or malformed"})
-            response.headers['Access-Control-Allow-Origin'] = allowed_origin
-            response.headers['Access-Control-Allow-Credentials'] = "true"
-            return response, 401
-
-        token = auth_header.split(" ")[1]
-        user_id = verify_jwt(token)
-        if not user_id:
-            response = jsonify({"success": False, "error": "Invalid or expired token"})
-            response.headers['Access-Control-Allow-Origin'] = allowed_origin
-            response.headers['Access-Control-Allow-Credentials'] = "true"
-            return response, 401
-
         data = request.get_json()
+        if not data:
+            return jsonify({"success": False, "error": "No data provided"}), 400
 
-        answers = {f"q{i+1}": data.get(field, "").upper() for i, field in enumerate([
-            "purposeOfInvesting", "lifeStage", "expectedReturns", 
-            "derivativeProducts", "investmentHorizon",
-            "marketDownturnReaction", "incomeStability", "emergencySavings"
-        ])}
+        # Map form fields to question IDs
+        answers = {
+            "q1": data.get("purposeOfInvesting", "").upper(),
+            "q2": data.get("lifeStage", "").upper(),
+            "q3": data.get("expectedReturns", "").upper(),
+            "q4": data.get("derivativeProducts", "").upper(),
+            "q5": data.get("investmentHorizon", "").upper(),
+            "q6": data.get("marketDownturnReaction", "").upper(),
+            "q7": data.get("incomeStability", "").upper(),
+            "q8": data.get("emergencySavings", "").upper()
+        }
 
-        total_score = sum(
-            q["options"][answers[q["id"]]]["score"]
-            for q in RISK_QUESTIONNAIRE["questions"]
-            if answers.get(q["id"]) in q["options"]
-        )
+        # Calculate total score
+        total_score = 0
+        for q in RISK_QUESTIONNAIRE["questions"]:
+            answer = answers.get(q["id"])
+            if answer in q["options"]:
+                total_score += q["options"][answer]["score"]
 
-        risk_bracket = next(
-            (b["name"] for b in RISK_QUESTIONNAIRE["risk_brackets"]
-            if b["min"] <= total_score <= b["max"]),
-            "Undetermined"
-        )
+        # Determine risk bracket
+        risk_bracket = "Undetermined"
+        for bracket in RISK_QUESTIONNAIRE["risk_brackets"]:
+            if bracket["min"] <= total_score <= bracket["max"]:
+                risk_bracket = bracket["name"]
+                break
 
+        # Prepare profile data
         profile_data = {
             "user_id": user_id,
             "submitted_at": datetime.utcnow().isoformat(),
@@ -292,28 +281,24 @@ def submit_risk():
             "answers": answers
         }
 
-        os.makedirs(os.path.dirname(profile_path := get_risk_profile_path(user_id)), exist_ok=True)
+        # Save to user's risk profile
+        profile_path = get_risk_profile_path(user_id)
+        os.makedirs(os.path.dirname(profile_path), exist_ok=True)
         with open(profile_path, 'w') as f:
             json.dump(profile_data, f)
 
-        response = jsonify({
+        return jsonify({
             "success": True,
             "total_score": total_score,
             "risk_bracket": risk_bracket
         })
-        response.headers['Access-Control-Allow-Origin'] = allowed_origin
-        response.headers['Access-Control-Allow-Credentials'] = "true"
-        return response
 
+    except KeyError as e:
+        logger.error(f"Missing required field: {str(e)}")
+        return jsonify({"success": False, "error": f"Missing required field: {str(e)}"}), 400
     except Exception as e:
-        logger.error(f"Submission error: {str(e)}")
-        response = jsonify({
-            "success": False,
-            "error": "Failed to process submission"
-        })
-        response.headers['Access-Control-Allow-Origin'] = allowed_origin
-        response.headers['Access-Control-Allow-Credentials'] = "true"
-        return response, 500
+        logger.error(f"Risk submission error: {str(e)}")
+        return jsonify({"success": False, "error": "Failed to process risk assessment"}), 500
 
 
 @app.route('/api/risk/check', methods=['POST'])
