@@ -6,6 +6,7 @@ yfinance
 pandas
 flask-mail
 PyJWT
+psycopg2-binary
 
 
 
