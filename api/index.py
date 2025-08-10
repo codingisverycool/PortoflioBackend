@@ -36,15 +36,20 @@ logger = logging.getLogger(__name__)
 app.config.update(
     SESSION_COOKIE_SAMESITE='None',
     SESSION_COOKIE_SECURE=True,
-    MAIL_SERVER='smtp.sendgrid.net',
+    MAIL_SERVER='live.smtp.mailtrap.io',
     MAIL_PORT=587,
     MAIL_USE_TLS=True,
     MAIL_USE_SSL=False,
-    MAIL_USERNAME='apikey',
-    MAIL_PASSWORD=os.environ.get('SENDGRID_API_KEY', ''),  # << use env
-    MAIL_DEFAULT_SENDER=os.environ.get('MAIL_DEFAULT_SENDER', 'noreply@example.com')
+    MAIL_USERNAME='apismtp@mailtrap.io',
+    MAIL_PASSWORD=os.environ.get('MAIL_PASSWORD', ''),
+    MAIL_DEFAULT_SENDER=os.environ.get('MAIL_DEFAULT_SENDER', 'noreply@example.com'),
 )
+if not app.config.get('MAIL_USERNAME') and not app.config.get('MAIL_PASSWORD'):
+    app.config['MAIL_SUPPRESS_SEND'] = True
+    logger.info("MAIL_SUPPRESS_SEND enabled (no SMTP credentials). Verification links will be returned in responses for testing.")
+
 mail = Mail(app)
+
 
 login_manager = LoginManager()
 login_manager.init_app(app)
