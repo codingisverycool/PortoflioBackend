@@ -659,6 +659,8 @@ def register():
     email = (data.get('email') or '').strip().lower()
     password = data.get('password')
     confirm_password = data.get('confirm_password')
+
+    # Validation
     if not email or not password or not confirm_password:
         return jsonify({'success': False, 'error': 'Missing required fields'}), 400
     if password != confirm_password:
@@ -667,34 +669,23 @@ def register():
         return jsonify({'success': False, 'error': 'Password must be at least 8 characters'}), 400
     if get_user_by_email(email):
         return jsonify({'success': False, 'error': 'Email already registered'}), 400
-    verification_token = secrets.token_urlsafe(32)
-    created_at_iso = datetime.utcnow().isoformat()
+
     encrypted_pass = generate_password_hash(password, method='pbkdf2:sha256')
-    meta = {"verification_token": verification_token, "created_at": created_at_iso}
+
     try:
+        # Skip email verification — mark as verified immediately
         db_query("""
             INSERT INTO users (email, encrypted_pass, verified, meta, created_at, updated_at)
             VALUES (%s, %s, %s, %s::jsonb, NOW(), NOW());
-        """, (email, encrypted_pass, False, json.dumps(meta)), commit=True)
+        """, (email, encrypted_pass, True, json.dumps({})), commit=True)
+
+        return jsonify({'success': True, 'message': 'Account created and verified (test mode).'}), 200
+
     except Exception as e:
         logger.exception("Failed to create user: %s", e)
         return jsonify({'success': False, 'error': 'Failed to create user'}), 500
-    # send verification email
-    try:
-        frontend_base_url = "turiyaportfolioplatform.vercel.app"  # Your deployed frontend
-        verification_link = f"{frontend_base_url}/verify/{verification_token}"
 
-        msg = Message("Verify Your Email - Portfolio Tracker", recipients=[email])
-        msg.body = f"Welcome to Portfolio Tracker!\n\nPlease verify your email:\n{verification_link}\n\nThis link expires in 24 hours."
-        mail.send(msg)
-        return jsonify({'success': True, 'message': 'Verification email sent! Please check your inbox.'}), 200
-    except Exception as e:
-        logger.exception("Failed to send verification email: %s", e)
-        try:
-            db_query("DELETE FROM users WHERE email = %s", (email,), commit=True)
-        except Exception:
-            logger.exception("Failed to rollback user creation for %s", email)
-        return jsonify({'success': False, 'error': 'Failed to send verification email'}), 500
+
 
 @app.route('/verify/<token>')
 def verify_email(token):
