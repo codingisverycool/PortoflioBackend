@@ -681,7 +681,9 @@ def register():
         return jsonify({'success': False, 'error': 'Failed to create user'}), 500
     # send verification email
     try:
-        verification_link = url_for('verify_email', token=verification_token, _external=True)
+        frontend_base_url = "https://turiyaportfolioplatform.vercel.app"  # Your deployed frontend
+        verification_link = f"{frontend_base_url}/verify/{verification_token}"
+
         msg = Message("Verify Your Email - Portfolio Tracker", recipients=[email])
         msg.body = f"Welcome to Portfolio Tracker!\n\nPlease verify your email:\n{verification_link}\n\nThis link expires in 24 hours."
         mail.send(msg)
