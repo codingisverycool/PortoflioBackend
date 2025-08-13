@@ -166,15 +166,169 @@ except Exception as e:
 
 RISK_QUESTIONNAIRE = {
     "questions": [
-        # ... unchanged ...
+        {
+            "id": "purposeOfInvesting",
+            "options": {
+                "a": {"score": 50},
+                "b": {"score": 40},
+                "c": {"score": 30},
+                "d": {"score": 20},
+                "e": {"score": 10}
+            }
+        },
+        {
+            "id": "lifeStage",
+            "options": {
+                "a": {"score": 50},
+                "b": {"score": 40},
+                "c": {"score": 30},
+                "d": {"score": 50},
+                "e": {"score": 20},
+                "f": {"score": 10}
+            }
+        },
+        {
+            "id": "expectedReturns",
+            "options": {
+                "a": {"score": 10},
+                "b": {"score": 20},
+                "c": {"score": 30},
+                "d": {"score": 40},
+                "e": {"score": 50}
+            }
+        },
+        {
+            "id": "derivativeProducts",
+            "options": {
+                "a": {"score": 50},
+                "b": {"score": 40},
+                "c": {"score": 30},
+                "d": {"score": 20},
+                "e": {"score": 10}
+            }
+        },
+        {
+            "id": "investmentHorizon",
+            "options": {
+                "a": {"score": 10},
+                "b": {"score": 20},
+                "c": {"score": 30},
+                "d": {"score": 40},
+                "e": {"score": 50}
+            }
+        },
+        {
+            "id": "marketDownturnReaction",
+            "options": {
+                "a": {"score": 50},
+                "b": {"score": 40},
+                "c": {"score": 30},
+                "d": {"score": 20},
+                "e": {"score": 10}
+            }
+        },
+        {
+            "id": "incomeStability",
+            "options": {
+                "a": {"score": 50},
+                "b": {"score": 40},
+                "c": {"score": 30},
+                "d": {"score": 20},
+                "e": {"score": 10}
+            }
+        },
+        {
+            "id": "emergencySavings",
+            "options": {
+                "a": {"score": 50},
+                "b": {"score": 40},
+                "c": {"score": 30},
+                "d": {"score": 20},
+                "e": {"score": 10}
+            }
+        },
+        # Investment Experience questions
+        {
+            "id": "equityExperience",
+            "options": {
+                "Extensive": {"score": 50},
+                "Moderate": {"score": 30},
+                "Limited": {"score": 10},
+                "None": {"score": 0}
+            }
+        },
+        {
+            "id": "fixedincomeExperience",
+            "options": {
+                "Extensive": {"score": 50},
+                "Moderate": {"score": 30},
+                "Limited": {"score": 10},
+                "None": {"score": 0}
+            }
+        },
+        {
+            "id": "propertyExperience",
+            "options": {
+                "Extensive": {"score": 50},
+                "Moderate": {"score": 30},
+                "Limited": {"score": 10},
+                "None": {"score": 0}
+            }
+        },
+        {
+            "id": "alternateinvestmentsExperience",
+            "options": {
+                "Extensive": {"score": 50},
+                "Moderate": {"score": 30},
+                "Limited": {"score": 10},
+                "None": {"score": 0}
+            }
+        },
+        {
+            "id": "overseasinvestmentsExperience",
+            "options": {
+                "Extensive": {"score": 50},
+                "Moderate": {"score": 30},
+                "Limited": {"score": 10},
+                "None": {"score": 0}
+            }
+        },
+        {
+            "id": "currenciesExperience",
+            "options": {
+                "Extensive": {"score": 50},
+                "Moderate": {"score": 30},
+                "Limited": {"score": 10},
+                "None": {"score": 0}
+            }
+        },
+        {
+            "id": "commoditiesExperience",
+            "options": {
+                "Extensive": {"score": 50},
+                "Moderate": {"score": 30},
+                "Limited": {"score": 10},
+                "None": {"score": 0}
+            }
+        },
+        {
+            "id": "passioninvestmentsExperience",
+            "options": {
+                "Extensive": {"score": 50},
+                "Moderate": {"score": 30},
+                "Limited": {"score": 10},
+                "None": {"score": 0}
+            }
+        }
     ],
     "risk_brackets": [
-        {"name": "Defensive", "min": 0, "max": 129},
-        {"name": "Moderate", "min": 130, "max": 259},
-        {"name": "Aggressive", "min": 260, "max": 359},
-        {"name": "Very Aggressive", "min": 360, "max": 400}
+        {"min": 0, "max": 120, "name": "Defensive"},
+        {"min": 130, "max": 250, "name": "Moderate"},
+        {"min": 260, "max": 350, "name": "Aggressive"},
+        {"min": 360, "max": 400, "name": "Very Aggressive"}
     ]
 }
+
 
 # ---------- User Class & user helpers ----------
 class User(UserMixin):
@@ -366,11 +520,17 @@ def submit_risk(user_id):
         }
 
         # Calculate total_score
-        total_score = 0
-        for q in RISK_QUESTIONNAIRE["questions"]:
-            ans = answers.get(q["id"])
-            if ans and ans in q["options"]:
-                total_score += q["options"][ans]["score"]
+        # Try frontend score first
+        total_score = data.get("totalScore")
+
+        if total_score is None:
+            total_score = 0
+            for q in RISK_QUESTIONNAIRE["questions"]:
+                ans = answers.get(q["id"])
+                if ans and ans in q["options"]:
+                    total_score += q["options"][ans]["score"]
+
+        total_score = int(total_score)
 
         # Determine bracket
         risk_bracket = "Undetermined"
@@ -378,6 +538,7 @@ def submit_risk(user_id):
             if bracket["min"] <= total_score <= bracket["max"]:
                 risk_bracket = bracket["name"]
                 break
+
 
         profile_data = {
             "user_id": user_id,
