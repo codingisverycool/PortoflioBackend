@@ -1,5 +1,5 @@
 # index.py -- DB-backed unified backend (Flask + Postgres + JWT)
-from flask import Flask, request, url_for, jsonify, make_response
+from flask import Flask, request, url_for, jsonify, make_response, redirect
 from flask_cors import CORS
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
 import yfinance as yf
@@ -7,8 +7,7 @@ import json
 import os
 from datetime import datetime, timedelta
 from werkzeug.security import generate_password_hash, check_password_hash
-from flask_mail import Mail, Message
-import secrets
+# removed flask_mail import and SendGrid usage per request
 from collections import defaultdict
 import pandas as pd
 import logging
@@ -32,19 +31,8 @@ DATABASE_URL = os.environ.get('DATABASE_URL')  # must be set for DB-backed usage
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
-# Email configuration (move real secrets to env in production)
-app.config.update(
-    SESSION_COOKIE_SAMESITE='None',
-    SESSION_COOKIE_SECURE=True,
-    MAIL_SERVER='smtp.sendgrid.net',
-    MAIL_PORT=587,
-    MAIL_USE_TLS=True,
-    MAIL_USE_SSL=False,
-    MAIL_USERNAME='apikey',
-    MAIL_PASSWORD=os.environ.get('SENDGRID_API_KEY', ''),  # << use env
-    MAIL_DEFAULT_SENDER=os.environ.get('MAIL_DEFAULT_SENDER', 'noreply@example.com')
-)
-mail = Mail(app)
+# NOTE: SendGrid / flask-mail removed per request.
+# If you want to reintroduce email providers later, add them back here.
 
 login_manager = LoginManager()
 login_manager.init_app(app)
@@ -121,6 +109,18 @@ def ensure_tables():
         created_at TIMESTAMPTZ DEFAULT NOW(),
         updated_at TIMESTAMPTZ DEFAULT NOW(),
         last_login TIMESTAMPTZ
+    );
+
+    CREATE TABLE IF NOT EXISTS user_identities (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        provider VARCHAR(50) NOT NULL,
+        provider_user_id TEXT NOT NULL,
+        provider_profile JSONB,
+        tokens JSONB,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE (provider, provider_user_id)
     );
 
     CREATE TABLE IF NOT EXISTS user_risk_profiles (
@@ -589,7 +589,7 @@ def check_risk_assessment(user_id):
             return jsonify({"success": True, "completed": False})
     except Exception as e:
         logger.exception("check_risk_assessment error: %s", e)
-        return jsonify({"success": False, "error": "Failed to fetch assessment"}), 500
+        return jsonify({'success': False, 'error': 'Failed to fetch assessment'}), 500
 
 # ---------- Market / holdings logic ----------
 def get_stock_info(ticker):
@@ -787,91 +787,111 @@ def compute_holdings_from_transactions(transactions):
     return holdings
 
 # ---------- Auth routes ----------
-@app.route('/api/login', methods=['POST'])
-def login():
-    data = request.get_json() or request.form
-    email = (data.get('email') or '').strip().lower()
-    password = data.get('password') or ''
-    logger.debug("Login attempt: %s (pwdlen=%d)", email, len(password))
-    user = get_user_by_email(email)
-    if not user:
-        return jsonify({'success': False, 'error': 'User not found'}), 404
-    if not user.get('verified'):
-        return jsonify({'success': False, 'error': 'Email not verified'}), 403
-    encrypted = user.get('encrypted_pass')
-    if not encrypted or not check_password_hash(encrypted, password):
-        return jsonify({'success': False, 'error': 'Incorrect password'}), 401
-    # login with flask-login using DB UUID
-    login_user(User(user['id'], user['email']))
-    try:
-        db_query("UPDATE users SET last_login = NOW() WHERE id = %s", (user['id'],), commit=True)
-    except Exception:
-        logger.exception("Failed to update last_login")
-    token = generate_jwt(user['id'])
-    return jsonify({'success': True, 'message': 'Login successful', 'token': token})
+# @app.route('/api/login', methods=['POST'])
+# def login():
+#     data = request.get_json() or request.form
+#     email = (data.get('email') or '').strip().lower()
+#     password = data.get('password') or ''
+#     logger.debug("Login attempt: %s (pwdlen=%d)", email, len(password))
+#     user = get_user_by_email(email)
+#     if not user:
+#         return jsonify({'success': False, 'error': 'User not found'}), 404
+#     if not user.get('verified'):
+#         return jsonify({'success': False, 'error': 'Email not verified'}), 403
+#     encrypted = user.get('encrypted_pass')
+#     if not encrypted or not check_password_hash(encrypted, password):
+#         return jsonify({'success': False, 'error': 'Incorrect password'}), 401
+#     # login with flask-login using DB UUID
+#     login_user(User(user['id'], user['email']))
+#     try:
+#         db_query("UPDATE users SET last_login = NOW() WHERE id = %s", (user['id'],), commit=True)
+#     except Exception:
+#         logger.exception("Failed to update last_login")
+#     token = generate_jwt(user['id'])
+#     return jsonify({'success': True, 'message': 'Login successful', 'token': token})
 
 @login_manager.unauthorized_handler
 def unauthorized():
     return jsonify({'success': False, 'error': 'Unauthorized'}), 401
 
-@app.route('/api/register', methods=['POST'])
-def register():
-    data = request.json or request.form
+@app.route('/api/auth/nextauth-oauth', methods=['POST'])
+def nextauth_oauth():
+    """
+    Endpoint intended to be called server-side by NextAuth (sign-in callback).
+    Payload should include:
+      - provider: 'google' | 'microsoft' | ...
+      - provider_user_id: provider's unique id for the user (sub/id)
+      - email
+      - email_verified (bool)
+      - profile (optional dict)
+      - tokens (optional dict)
+    The endpoint upserts/links the user in `users` and `user_identities` and returns an app JWT.
+    """
+    data = request.json or {}
+    provider = data.get('provider')
+    provider_user_id = data.get('provider_user_id')
     email = (data.get('email') or '').strip().lower()
-    password = data.get('password')
-    confirm_password = data.get('confirm_password')
+    email_verified = bool(data.get('email_verified', False))
+    profile = data.get('profile') or {}
+    tokens = data.get('tokens') or {}
 
-    # Validation
-    if not email or not password or not confirm_password:
-        return jsonify({'success': False, 'error': 'Missing required fields'}), 400
-    if password != confirm_password:
-        return jsonify({'success': False, 'error': 'Passwords do not match'}), 400
-    if len(password) < 8:
-        return jsonify({'success': False, 'error': 'Password must be at least 8 characters'}), 400
-    if get_user_by_email(email):
-        return jsonify({'success': False, 'error': 'Email already registered'}), 400
-
-    encrypted_pass = generate_password_hash(password, method='pbkdf2:sha256')
+    if not provider or not provider_user_id:
+        return jsonify({'success': False, 'error': 'Missing provider info'}), 400
 
     try:
-        # Skip email verification — mark as verified immediately
-        db_query("""
-            INSERT INTO users (email, encrypted_pass, verified, meta, created_at, updated_at)
-            VALUES (%s, %s, %s, %s::jsonb, NOW(), NOW());
-        """, (email, encrypted_pass, True, json.dumps({})), commit=True)
+        # 1) Try to find existing user by provider identity
+        row = db_query("""
+            SELECT u.* FROM users u
+            JOIN user_identities ui ON ui.user_id = u.id
+            WHERE ui.provider = %s AND ui.provider_user_id = %s
+            LIMIT 1
+        """, (provider, provider_user_id), fetchone=True)
 
-        return jsonify({'success': True, 'message': 'Account created and verified (test mode).'}), 200
+        if row:
+            user = dict(row)
+        else:
+            # 2) try find by email
+            user = None
+            if email:
+                row = db_query("SELECT * FROM users WHERE email = %s LIMIT 1", (email,), fetchone=True)
+                if row:
+                    user = dict(row)
 
+            if user:
+                # link provider identity if missing
+                try:
+                    db_query("""
+                        INSERT INTO user_identities (user_id, provider, provider_user_id, provider_profile, tokens)
+                        VALUES (%s,%s,%s,%s::jsonb,%s::jsonb)
+                        ON CONFLICT (provider, provider_user_id) DO NOTHING
+                    """, (user['id'], provider, provider_user_id, json.dumps(profile), json.dumps(tokens)), commit=True)
+                    if email_verified and not user.get('verified'):
+                        db_query("UPDATE users SET verified = TRUE, updated_at = NOW() WHERE id = %s", (user['id'],), commit=True)
+                except Exception:
+                    logger.exception("Error linking identity to existing user")
+            else:
+                # 3) create new user and identity
+                meta = {'oauth': {provider: {'sub': provider_user_id, 'profile': profile, 'created_at': datetime.utcnow().isoformat()}}}
+                db_query("""
+                    INSERT INTO users (email, encrypted_pass, verified, meta, created_at, updated_at)
+                    VALUES (%s,%s,%s,%s::jsonb,NOW(),NOW())
+                """, (email, None, email_verified, json.dumps(meta)), commit=True)
+                user = db_query("SELECT * FROM users WHERE email = %s LIMIT 1", (email,), fetchone=True)
+                try:
+                    db_query("""
+                        INSERT INTO user_identities (user_id, provider, provider_user_id, provider_profile, tokens)
+                        VALUES (%s,%s,%s,%s::jsonb,%s::jsonb)
+                    """, (user['id'], provider, provider_user_id, json.dumps(profile), json.dumps(tokens)), commit=True)
+                except Exception:
+                    logger.exception("Error inserting user identity for new user")
+
+        # generate app JWT and return
+        token = generate_jwt(user['id'])
+        return jsonify({'success': True, 'token': token, 'user_id': user['id']})
     except Exception as e:
-        logger.exception("Failed to create user: %s", e)
-        return jsonify({'success': False, 'error': 'Failed to create user'}), 500
+        logger.exception("nextauth_oauth error: %s", e)
+        return jsonify({'success': False, 'error': 'Failed to process OAuth login'}), 500
 
-
-
-@app.route('/verify/<token>')
-def verify_email(token):
-    try:
-        row = db_query("SELECT id, email, meta FROM users WHERE meta->>'verification_token' = %s LIMIT 1", (token,), fetchone=True)
-        if not row:
-            return jsonify({'success': False, 'error': 'Invalid verification link'}), 400
-        meta = row.get('meta') or {}
-        created_at_str = meta.get('created_at')
-        if created_at_str:
-            created_at = datetime.fromisoformat(created_at_str)
-            if (datetime.utcnow() - created_at).days > 1:
-                return jsonify({'success': False, 'error': 'Verification link expired'}), 400
-        email = row['email']
-        db_query("""
-            UPDATE users
-            SET verified = TRUE,
-                meta = (meta - 'verification_token')::jsonb,
-                updated_at = NOW()
-            WHERE email = %s
-        """, (email,), commit=True)
-        return jsonify({'success': True, 'message': 'Email verified successfully!'}), 200
-    except Exception as e:
-        logger.exception("verify_email error: %s", e)
-        return jsonify({'success': False, 'error': 'Invalid verification link'}), 400
 
 @app.route('/api/logout', methods=['POST'])
 @login_required
