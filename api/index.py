@@ -814,6 +814,44 @@ def compute_holdings_from_transactions(transactions):
 def unauthorized():
     return jsonify({'success': False, 'error': 'Unauthorized'}), 401
 
+@app.route('/api/oauth/login', methods=['POST'])
+def oauth_login():
+    try:
+        data = request.get_json() or {}
+        email = (data.get('email') or '').strip().lower()
+        name = data.get('name')
+        provider = data.get('provider')
+
+        if not email:
+            return jsonify({'success': False, 'error': 'Missing email'}), 400
+
+        # If DB-backed:
+        existing = get_user_by_email(email)
+        if existing:
+            user_id = existing['id']
+            # Optionally update meta with provider info
+            meta = existing.get('meta') or {}
+            meta.update({'last_oauth_provider': provider, 'name': name})
+            db_query("UPDATE users SET meta = %s::jsonb, updated_at = NOW() WHERE id = %s", (json.dumps(meta), user_id), commit=True)
+        else:
+            # Create user, mark verified TRUE since OAuth provider verified email
+            row = db_query("""
+                INSERT INTO users (email, encrypted_pass, verified, meta, created_at, updated_at)
+                VALUES (%s, %s, %s, %s::jsonb, NOW(), NOW())
+                RETURNING id;
+            """, (email, None, True, json.dumps({'name': name, 'oauth_provider': provider})), fetchone=True, commit=True)
+            user_id = row['id'] if row else None
+
+        if not user_id:
+            return jsonify({'success': False, 'error': 'Failed to create/find user'}), 500
+
+        token = generate_jwt(user_id)
+        return jsonify({'success': True, 'token': token, 'user': {'id': user_id, 'email': email}})
+
+    except Exception:
+        logger.exception("oauth_login error")
+        return jsonify({'success': False, 'error': 'Internal server error'}), 500
+
 @app.route('/api/auth/nextauth-oauth', methods=['POST'])
 def nextauth_oauth():
     """
