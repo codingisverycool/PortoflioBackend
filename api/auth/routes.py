@@ -70,9 +70,13 @@ def login():
         return cors_response(jsonify({'success': False, 'error': 'User not found'})), 404
     if not user.get('verified'):
         return cors_response(jsonify({'success': False, 'error': 'Email not verified'})), 403
+
     encrypted = user.get('encrypted_pass')
-    if not encrypted or not check_password_hash(encrypted, password):
-        return cors_response(jsonify({'success': False, 'error': 'Incorrect password'})), 401
+    if encrypted:
+        if not check_password_hash(encrypted, password):
+            return cors_response(jsonify({'success': False, 'error': 'Incorrect password'})), 401
+    else:
+        return cors_response(jsonify({'success': False, 'error': 'Use OAuth login'})), 401
 
     # Session login (optional)
     try:
@@ -128,72 +132,6 @@ def oauth_login():
     except Exception:
         logger.exception("oauth_login error")
         return cors_response(jsonify({'success': False, 'error': 'Internal server error'})), 500
-
-# --- NextAuth OAuth endpoint ---
-@auth_bp.route('/api/auth/nextauth-oauth', methods=['POST', 'OPTIONS'])
-def nextauth_oauth():
-    if request.method == 'OPTIONS':
-        return cors_response(make_response())
-    data = request.json or {}
-    provider = data.get('provider')
-    provider_user_id = data.get('provider_user_id')
-    email = (data.get('email') or '').strip().lower()
-    email_verified = bool(data.get('email_verified', False))
-    profile = data.get('profile') or {}
-    tokens = data.get('tokens') or {}
-
-    if not provider or not provider_user_id:
-        return cors_response(jsonify({'success': False, 'error': 'Missing provider info'})), 400
-
-    try:
-        # find by identity
-        row = db_query("""
-            SELECT u.* FROM users u
-            JOIN user_identities ui ON ui.user_id = u.id
-            WHERE ui.provider = %s AND ui.provider_user_id = %s
-            LIMIT 1
-        """, (provider, provider_user_id), fetchone=True)
-
-        if row:
-            user = dict(row)
-        else:
-            user = None
-            if email:
-                row = db_query("SELECT * FROM users WHERE email = %s LIMIT 1", (email,), fetchone=True)
-                if row:
-                    user = dict(row)
-
-            if user:
-                try:
-                    db_query("""
-                        INSERT INTO user_identities (user_id, provider, provider_user_id, provider_profile, tokens)
-                        VALUES (%s,%s,%s,%s::jsonb,%s::jsonb)
-                        ON CONFLICT (provider, provider_user_id) DO NOTHING
-                    """, (user['id'], provider, provider_user_id, json.dumps(profile), json.dumps(tokens)), commit=True)
-                    if email_verified and not user.get('verified'):
-                        db_query("UPDATE users SET verified = TRUE, updated_at = NOW() WHERE id = %s", (user['id'],), commit=True)
-                except Exception:
-                    logger.exception("Error linking identity to existing user")
-            else:
-                meta = {'oauth': {provider: {'sub': provider_user_id, 'profile': profile, 'created_at': datetime.utcnow().isoformat()}}}
-                db_query("""
-                    INSERT INTO users (email, encrypted_pass, verified, meta, created_at, updated_at)
-                    VALUES (%s,%s,%s,%s::jsonb,NOW(),NOW())
-                """, (email, None, email_verified, json.dumps(meta)), commit=True)
-                user = db_query("SELECT * FROM users WHERE email = %s LIMIT 1", (email,), fetchone=True)
-                try:
-                    db_query("""
-                        INSERT INTO user_identities (user_id, provider, provider_user_id, provider_profile, tokens)
-                        VALUES (%s,%s,%s,%s::jsonb,%s::jsonb)
-                    """, (user['id'], provider, provider_user_id, json.dumps(profile), json.dumps(tokens)), commit=True)
-                except Exception:
-                    logger.exception("Error inserting user identity for new user")
-
-        token = generate_jwt(user['id'])
-        return cors_response(jsonify({'success': True, 'token': token, 'user_id': user['id']}))
-    except Exception as e:
-        logger.exception("nextauth_oauth error: %s", e)
-        return cors_response(jsonify({'success': False, 'error': 'Failed to process OAuth login'})), 500
 
 # --- Logout ---
 @auth_bp.route('/api/logout', methods=['POST', 'OPTIONS'])
