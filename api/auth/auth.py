@@ -22,7 +22,7 @@ handler.setFormatter(
 logger.addHandler(handler)
 
 # ----------------------
-# Env variables
+# Environment variables
 # ----------------------
 JWT_SECRET_KEY = os.environ.get('JWT_SECRET_KEY')
 if not JWT_SECRET_KEY or len(JWT_SECRET_KEY) < 32:

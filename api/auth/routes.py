@@ -7,7 +7,7 @@ from flask_login import login_user, logout_user
 from werkzeug.security import generate_password_hash, check_password_hash
 
 from api.database.db import db_query
-from api.auth.auth import generate_jwt, token_required, login_manager
+from api.auth.auth import generate_jwt, token_required
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
@@ -28,6 +28,7 @@ def cors_response(resp):
 def register():
     if request.method == 'OPTIONS':
         return cors_response(make_response())
+
     data = request.json or request.form
     email = (data.get('email') or '').strip().lower()
     password = data.get('password')
@@ -60,10 +61,10 @@ def register():
 def login():
     if request.method == 'OPTIONS':
         return cors_response(make_response())
+
     data = request.get_json() or request.form
     email = (data.get('email') or '').strip().lower()
     password = data.get('password') or ''
-    logger.debug("Login attempt: %s (pwdlen=%d)", email, len(password))
 
     user = db_query("SELECT * FROM users WHERE email = %s LIMIT 1", (email,), fetchone=True)
     if not user:
