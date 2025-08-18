@@ -6,7 +6,6 @@ from functools import wraps
 
 import jwt
 from flask import request, jsonify, make_response
-from flask_login import current_user
 
 from api.database.db import db_query
 
@@ -121,14 +120,6 @@ def token_required(f):
             token = auth_header.split(' ', 1)[1].strip()
             user_id = verify_jwt(token)
             logger.info(f"JWT auth attempt for user: {user_id}")
-
-        if not user_id:
-            try:
-                if current_user.is_authenticated:
-                    user_id = current_user.id
-                    logger.info(f"Session auth for user: {user_id}")
-            except Exception as e:
-                logger.warning(f"Session auth check failed: {str(e)}")
 
         if not user_id:
             resp = jsonify({'success': False, 'error': 'Authentication required', 'code': 'UNAUTHORIZED'})
