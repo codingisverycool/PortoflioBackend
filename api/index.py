@@ -1,4 +1,4 @@
-# index.py
+# api/index.py
 import logging
 import os
 from flask import Flask, jsonify
@@ -8,13 +8,11 @@ from flask_cors import CORS
 from api.database.db import ensure_tables
 
 # Auth system
-from api.auth.auth import login_manager
 from api.auth.routes import auth_bp
-from api.auth.auth import oauth 
 
 # Finance sections
 from api.finance.routes import finance_bp          # For portfolio, transactions, valuation, etc.
-from api.finance.risk import risk_bp       # For risk questionnaire endpoints
+from api.finance.risk import risk_bp               # For risk questionnaire endpoints
 
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
@@ -23,11 +21,8 @@ def create_app():
     app = Flask(__name__)
     CORS(app, supports_credentials=True)
 
-    # Secret keys - ensure these are set in your Vercel environment
+    # Secret key - ensure this is set in your Vercel environment
     app.secret_key = os.environ.get("FLASK_SECRET_KEY", "dev-secret")
-
-    # Init login manager
-    login_manager.init_app(app)
 
     # Register blueprints
     app.register_blueprint(auth_bp)
