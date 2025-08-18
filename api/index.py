@@ -10,6 +10,7 @@ from api.database.db import ensure_tables
 # Auth system
 from api.auth.auth import login_manager
 from api.auth.routes import auth_bp
+from api.auth.auth import oauth 
 
 # Finance sections
 from api.finance.routes import finance_bp          # For portfolio, transactions, valuation, etc.
