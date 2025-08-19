@@ -1,13 +1,15 @@
 # api/auth/routes.py
+import os
 import json
 import logging
-from datetime import datetime
-from flask import Blueprint, request, jsonify, make_response
+from datetime import datetime, timedelta
+from flask import Blueprint, request, jsonify, make_response, current_app
 from flask_login import login_user, logout_user
 from werkzeug.security import generate_password_hash, check_password_hash
 
 from api.database.db import db_query
-from api.auth.auth import generate_jwt, token_required
+from api.auth.auth import generate_jwt, token_required  # keep your existing generate_jwt
+# We'll also show a tiny token_required helper below if you need to adapt it
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
@@ -22,6 +24,30 @@ def cors_response(resp):
     resp.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
     resp.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
     return resp
+
+# --- Helper: set cookie attributes depending on env/host ---
+def _cookie_params():
+    # In production you should enforce secure=True, samesite='None'
+    # For local dev (http://localhost:3000) set secure=False and samesite='Lax'
+    host = request.host or ''
+    is_localhost = 'localhost' in host or host.startswith('127.0.0.1')
+    secure = not is_localhost
+    samesite = 'Lax' if is_localhost else 'None'
+    return secure, samesite
+
+# --- Helper: attempt to read token from Authorization header or cookie ---
+def get_token_from_request():
+    # 1) Authorization header (Bearer)
+    auth = request.headers.get('Authorization')
+    if auth and auth.startswith('Bearer '):
+        return auth.split(' ', 1)[1].strip()
+
+    # 2) cookie named 'access_token'
+    token = request.cookies.get('access_token')
+    if token:
+        return token
+
+    return None
 
 # --- Registration ---
 @auth_bp.route('/api/register', methods=['POST', 'OPTIONS'])
@@ -51,6 +77,28 @@ def register():
             INSERT INTO users (email, encrypted_pass, verified, meta, created_at, updated_at)
             VALUES (%s, %s, %s, %s::jsonb, NOW(), NOW());
         """, (email, encrypted_pass, False, json.dumps({})), commit=True)
+
+        # Optionally auto-login after registration: create token and set cookie
+        new_user = db_query("SELECT id FROM users WHERE email = %s LIMIT 1", (email,), fetchone=True)
+        user_id = new_user['id'] if new_user else None
+        if user_id:
+            token = generate_jwt(user_id)
+
+            secure, samesite = _cookie_params()
+            resp = make_response(jsonify({'success': True, 'message': 'Account created. Please verify email if enabled.', 'token': token, 'user': {'id': user_id, 'email': email}}))
+            # cookie duration: match your JWT expiry (example: 7 days)
+            max_age = int(os.getenv('JWT_MAX_AGE_SECONDS', 60 * 60 * 24 * 7))
+            resp.set_cookie(
+                'access_token',
+                token,
+                max_age=max_age,
+                httponly=True,
+                secure=secure,
+                samesite=samesite,
+                path='/'
+            )
+            return cors_response(resp), 200
+
         return cors_response(jsonify({'success': True, 'message': 'Account created. Please verify email if enabled.'})), 200
     except Exception as e:
         logger.exception("Failed to create user: %s", e)
@@ -92,9 +140,16 @@ def login():
         db_query("UPDATE users SET last_login = NOW() WHERE id = %s", (user['id'],), commit=True)
     except Exception:
         logger.exception("Failed to update last_login")
-    
+
     token = generate_jwt(user['id'])
-    return cors_response(jsonify({'success': True, 'message': 'Login successful', 'token': token, 'user': {'id': user['id'], 'email': email}}))
+
+    # Return token in body AND set HttpOnly cookie for browser usage
+    secure, samesite = _cookie_params()
+    resp = make_response(jsonify({'success': True, 'message': 'Login successful', 'token': token, 'user': {'id': user['id'], 'email': email}}))
+    max_age = int(os.getenv('JWT_MAX_AGE_SECONDS', 60 * 60 * 24 * 7))
+    resp.set_cookie('access_token', token, max_age=max_age, httponly=True, secure=secure, samesite=samesite, path='/')
+
+    return cors_response(resp)
 
 # --- OAuth login ---
 @auth_bp.route('/api/oauth/login', methods=['POST', 'OPTIONS'])
@@ -129,7 +184,13 @@ def oauth_login():
             return cors_response(jsonify({'success': False, 'error': 'Failed to create/find user'})), 500
 
         token = generate_jwt(user_id)
-        return cors_response(jsonify({'success': True, 'token': token, 'user': {'id': user_id, 'email': email}}))
+
+        # Set cookie + return JSON
+        secure, samesite = _cookie_params()
+        resp = make_response(jsonify({'success': True, 'token': token, 'user': {'id': user_id, 'email': email}}))
+        max_age = int(os.getenv('JWT_MAX_AGE_SECONDS', 60 * 60 * 24 * 7))
+        resp.set_cookie('access_token', token, max_age=max_age, httponly=True, secure=secure, samesite=samesite, path='/')
+        return cors_response(resp)
     except Exception:
         logger.exception("oauth_login error")
         return cors_response(jsonify({'success': False, 'error': 'Internal server error'})), 500
@@ -144,4 +205,8 @@ def logout(user_id):
         logout_user()
     except Exception:
         pass
-    return cors_response(jsonify({'success': True, 'message': 'Logged out successfully'})), 200
+
+    # Clear cookie by sending an expired cookie
+    resp = make_response(jsonify({'success': True, 'message': 'Logged out successfully'}))
+    resp.set_cookie('access_token', '', expires=0, httponly=True, secure=True, samesite='None', path='/')
+    return cors_response(resp), 200

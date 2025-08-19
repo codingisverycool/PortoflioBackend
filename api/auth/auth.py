@@ -28,7 +28,11 @@ if not JWT_SECRET_KEY or len(JWT_SECRET_KEY) < 32:
     raise ValueError("JWT_SECRET_KEY must be at least 32 characters long")
 
 JWT_ALGORITHM = os.environ.get('JWT_ALGORITHM', 'HS256')
+# Backwards-compatible: use JWT_EXPIRE_DAYS if provided, else default to 7 days.
 JWT_EXPIRE_DAYS = int(os.environ.get('JWT_EXPIRE_DAYS', 7))
+
+# Cookie name used when the token is stored in an HttpOnly cookie
+COOKIE_NAME = os.environ.get('COOKIE_NAME', 'access_token')
 
 # ----------------------
 # Helper functions
@@ -98,11 +102,36 @@ def verify_jwt(token):
         return None
 
 # ----------------------
+# Token retrieval helper
+# ----------------------
+def get_token_from_request():
+    """
+    Attempt to obtain a JWT token from:
+      1) Authorization header: 'Bearer <token>'
+      2) HttpOnly cookie named COOKIE_NAME
+    Returns the token string or None.
+    """
+    # 1) Authorization header (Bearer)
+    auth = request.headers.get('Authorization', '')
+    if auth and auth.startswith('Bearer '):
+        token = auth.split(' ', 1)[1].strip()
+        if token:
+            return token, 'header'
+
+    # 2) cookie named COOKIE_NAME
+    token = request.cookies.get(COOKIE_NAME)
+    if token:
+        return token, 'cookie'
+
+    return None, None
+
+# ----------------------
 # Decorators
 # ----------------------
 def token_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
+        # Handle CORS preflight quickly
         if request.method == 'OPTIONS':
             resp = make_response()
             origin = request.headers.get('Origin', '*')
@@ -113,13 +142,12 @@ def token_required(f):
             resp.headers['Access-Control-Max-Age'] = "86400"
             return resp
 
-        auth_header = request.headers.get('Authorization', '')
+        token, source = get_token_from_request()
         user_id = None
 
-        if auth_header.startswith('Bearer '):
-            token = auth_header.split(' ', 1)[1].strip()
+        if token:
             user_id = verify_jwt(token)
-            logger.info(f"JWT auth attempt for user: {user_id}")
+            logger.info(f"JWT auth attempt from {source}: user_id={user_id}")
 
         if not user_id:
             resp = jsonify({'success': False, 'error': 'Authentication required', 'code': 'UNAUTHORIZED'})
@@ -138,6 +166,7 @@ def token_required(f):
             resp.headers['Access-Control-Allow-Credentials'] = 'true'
             return resp
 
+        # Attach user to request for downstream handlers
         request.user = user
         return f(user_id, *args, **kwargs)
     return decorated
