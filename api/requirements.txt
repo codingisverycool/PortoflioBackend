@@ -7,6 +7,9 @@ pandas
 flask-mail
 PyJWT
 psycopg2-binary
+google-auth
+google-auth-oauthlib
+
 
 
 
