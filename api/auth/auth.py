@@ -1,11 +1,10 @@
 # api/auth/auth.py
 import os
 import logging
-from datetime import datetime, timedelta
 from functools import wraps
-
-import jwt
 from flask import request, jsonify, make_response
+from google.auth.transport import requests as google_requests
+from google.oauth2 import id_token
 
 from api.database.db import db_query
 
@@ -20,17 +19,6 @@ handler.setFormatter(
 )
 if not logger.handlers:
     logger.addHandler(handler)
-
-# ----------------------
-# Environment variables
-# ----------------------
-JWT_SECRET_KEY = os.environ.get('JWT_SECRET_KEY')
-if not JWT_SECRET_KEY or len(JWT_SECRET_KEY) < 32:
-    raise ValueError("JWT_SECRET_KEY must be at least 32 characters long")
-
-JWT_ALGORITHM = os.environ.get('JWT_ALGORITHM', 'HS256')
-JWT_EXPIRE_DAYS = int(os.environ.get('JWT_EXPIRE_DAYS', 7))
-COOKIE_NAME = os.environ.get('COOKIE_NAME', 'access_token')
 
 # ----------------------
 # Helper functions
@@ -64,34 +52,31 @@ def get_user_by_id(user_id):
         logger.error(f"Error fetching user by ID {user_id}: {str(e)}")
         return None
 
-def verify_jwt(token):
+# ----------------------
+# Verify Google ID Token
+# ----------------------
+def verify_google_jwt(token):
     """
-    Verifies a JWT from NextAuth (backend-generated) or custom-issued.
-    Accepts both "user_id" and "sub" as identifiers.
+    Verifies a Google ID token using google-auth library.
+    Returns the Google 'sub' field (user ID) if valid, else None.
     """
     try:
-        payload = jwt.decode(
-            token,
-            JWT_SECRET_KEY,
-            algorithms=[JWT_ALGORITHM],
-            options={"verify_aud": False, "verify_iss": False}  # don’t enforce iss/aud
-        )
+        # NOTE: audience should match your Google Client ID
+        CLIENT_ID = os.environ.get('GOOGLE_CLIENT_ID')
+        payload = id_token.verify_oauth2_token(token, google_requests.Request(), CLIENT_ID)
 
-        user_id = payload.get("user_id") or payload.get("sub")
+        user_id = payload.get("sub")
         if not user_id:
-            logger.warning(f"JWT missing user_id/sub: {payload}")
+            logger.warning(f"Google JWT missing 'sub': {payload}")
             return None
 
-        logger.info(f"JWT verified successfully for user_id={user_id}")
+        logger.info(f"Google JWT verified successfully for user_id={user_id}")
         return user_id
-    except jwt.ExpiredSignatureError:
-        logger.warning("Expired JWT token")
-        return None
-    except jwt.InvalidTokenError as e:
-        logger.warning(f"Invalid JWT token: {str(e)}")
+    except ValueError as e:
+        logger.warning(f"Invalid Google JWT: {str(e)}")
         return None
     except Exception as e:
-        logger.error(f"JWT verification error: {str(e)}")
+        logger.error(f"Error verifying Google JWT: {str(e)}")
         return None
 
 # ----------------------
@@ -101,7 +86,6 @@ def get_token_from_request():
     """
     Attempt to obtain a JWT token from:
       1) Authorization header: 'Bearer <token>'
-      2) HttpOnly cookie named COOKIE_NAME
     Returns (token, source) or (None, None).
     """
     auth = request.headers.get('Authorization', '')
@@ -109,11 +93,6 @@ def get_token_from_request():
         token = auth.split(' ', 1)[1].strip()
         if token:
             return token, 'header'
-
-    token = request.cookies.get(COOKIE_NAME)
-    if token:
-        return token, 'cookie'
-
     return None, None
 
 # ----------------------
@@ -136,8 +115,8 @@ def token_required(f):
         user_id = None
 
         if token:
-            user_id = verify_jwt(token)
-            logger.info(f"JWT auth attempt from {source}: user_id={user_id}")
+            user_id = verify_google_jwt(token)
+            logger.info(f"Google JWT auth attempt from {source}: user_id={user_id}")
 
         if not user_id:
             resp = jsonify({'success': False, 'error': 'Authentication required', 'code': 'UNAUTHORIZED'})
@@ -168,19 +147,3 @@ def admin_required(f):
             return jsonify({'success': False, 'error': 'Admin access required', 'code': 'FORBIDDEN'}), 403
         return f(user_id, *args, **kwargs)
     return decorated
-
-# ----------------------
-# Optional: generate JWT (for testing)
-# ----------------------
-def generate_jwt(user_id, expires_days=JWT_EXPIRE_DAYS):
-    payload = {
-        "user_id": str(user_id),
-        "exp": datetime.utcnow() + timedelta(days=expires_days),
-        "iat": datetime.utcnow(),
-    }
-    try:
-        token = jwt.encode(payload, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
-        return token if isinstance(token, str) else token.decode('utf-8')
-    except Exception as e:
-        logger.error(f"JWT generation failed: {str(e)}")
-        raise
