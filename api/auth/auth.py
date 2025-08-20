@@ -18,7 +18,8 @@ handler = logging.StreamHandler()
 handler.setFormatter(
     logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 )
-logger.addHandler(handler)
+if not logger.handlers:
+    logger.addHandler(handler)
 
 # ----------------------
 # Environment variables
@@ -28,10 +29,7 @@ if not JWT_SECRET_KEY or len(JWT_SECRET_KEY) < 32:
     raise ValueError("JWT_SECRET_KEY must be at least 32 characters long")
 
 JWT_ALGORITHM = os.environ.get('JWT_ALGORITHM', 'HS256')
-# Backwards-compatible: use JWT_EXPIRE_DAYS if provided, else default to 7 days.
 JWT_EXPIRE_DAYS = int(os.environ.get('JWT_EXPIRE_DAYS', 7))
-
-# Cookie name used when the token is stored in an HttpOnly cookie
 COOKIE_NAME = os.environ.get('COOKIE_NAME', 'access_token')
 
 # ----------------------
@@ -71,8 +69,6 @@ def generate_jwt(user_id, expires_days=JWT_EXPIRE_DAYS):
         "user_id": str(user_id),
         "exp": datetime.utcnow() + timedelta(days=expires_days),
         "iat": datetime.utcnow(),
-        "iss": "your-app-name",
-        "aud": "your-app-client"
     }
     try:
         token = jwt.encode(payload, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
@@ -82,15 +78,25 @@ def generate_jwt(user_id, expires_days=JWT_EXPIRE_DAYS):
         raise
 
 def verify_jwt(token):
+    """
+    Verifies a JWT from NextAuth or custom-issued.
+    Accepts both "user_id" and "sub" as identifiers.
+    """
     try:
         payload = jwt.decode(
             token,
             JWT_SECRET_KEY,
             algorithms=[JWT_ALGORITHM],
-            issuer="your-app-name",
-            audience="your-app-client"
+            options={"verify_aud": False, "verify_iss": False}  # don’t enforce iss/aud
         )
-        return payload.get("user_id")
+
+        user_id = payload.get("user_id") or payload.get("sub")
+        if not user_id:
+            logger.warning(f"JWT missing user_id/sub: {payload}")
+            return None
+
+        logger.info(f"JWT verified successfully for user_id={user_id}")
+        return user_id
     except jwt.ExpiredSignatureError:
         logger.warning("Expired JWT token")
         return None
@@ -109,16 +115,14 @@ def get_token_from_request():
     Attempt to obtain a JWT token from:
       1) Authorization header: 'Bearer <token>'
       2) HttpOnly cookie named COOKIE_NAME
-    Returns the token string or None.
+    Returns (token, source) or (None, None).
     """
-    # 1) Authorization header (Bearer)
     auth = request.headers.get('Authorization', '')
     if auth and auth.startswith('Bearer '):
         token = auth.split(' ', 1)[1].strip()
         if token:
             return token, 'header'
 
-    # 2) cookie named COOKIE_NAME
     token = request.cookies.get(COOKIE_NAME)
     if token:
         return token, 'cookie'
@@ -131,7 +135,6 @@ def get_token_from_request():
 def token_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
-        # Handle CORS preflight quickly
         if request.method == 'OPTIONS':
             resp = make_response()
             origin = request.headers.get('Origin', '*')
@@ -166,7 +169,6 @@ def token_required(f):
             resp.headers['Access-Control-Allow-Credentials'] = 'true'
             return resp
 
-        # Attach user to request for downstream handlers
         request.user = user
         return f(user_id, *args, **kwargs)
     return decorated
