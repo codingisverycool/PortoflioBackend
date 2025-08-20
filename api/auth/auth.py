@@ -64,22 +64,9 @@ def get_user_by_id(user_id):
         logger.error(f"Error fetching user by ID {user_id}: {str(e)}")
         return None
 
-def generate_jwt(user_id, expires_days=JWT_EXPIRE_DAYS):
-    payload = {
-        "user_id": str(user_id),
-        "exp": datetime.utcnow() + timedelta(days=expires_days),
-        "iat": datetime.utcnow(),
-    }
-    try:
-        token = jwt.encode(payload, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
-        return token if isinstance(token, str) else token.decode('utf-8')
-    except Exception as e:
-        logger.error(f"JWT generation failed: {str(e)}")
-        raise
-
 def verify_jwt(token):
     """
-    Verifies a JWT from NextAuth or custom-issued.
+    Verifies a JWT from NextAuth (backend-generated) or custom-issued.
     Accepts both "user_id" and "sub" as identifiers.
     """
     try:
@@ -181,3 +168,19 @@ def admin_required(f):
             return jsonify({'success': False, 'error': 'Admin access required', 'code': 'FORBIDDEN'}), 403
         return f(user_id, *args, **kwargs)
     return decorated
+
+# ----------------------
+# Optional: generate JWT (for testing)
+# ----------------------
+def generate_jwt(user_id, expires_days=JWT_EXPIRE_DAYS):
+    payload = {
+        "user_id": str(user_id),
+        "exp": datetime.utcnow() + timedelta(days=expires_days),
+        "iat": datetime.utcnow(),
+    }
+    try:
+        token = jwt.encode(payload, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
+        return token if isinstance(token, str) else token.decode('utf-8')
+    except Exception as e:
+        logger.error(f"JWT generation failed: {str(e)}")
+        raise
