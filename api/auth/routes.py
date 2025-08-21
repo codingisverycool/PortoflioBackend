@@ -6,7 +6,7 @@ from flask_login import login_user, logout_user
 from werkzeug.security import generate_password_hash, check_password_hash
 
 from api.database.db import db_query
-from api.auth.auth import token_required, verify_google_jwt, generate_jwt
+from api.auth.auth import token_required, verify_google_jwt  # <-- no generate_jwt now
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
@@ -22,7 +22,7 @@ def cors_response(resp):
     resp.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
     return resp
 
-# --- Registration (unchanged) ---
+# --- Registration ---
 @auth_bp.route('/api/register', methods=['POST', 'OPTIONS'])
 def register():
     if request.method == 'OPTIONS':
@@ -51,7 +51,7 @@ def register():
         logger.exception("Failed to create user: %s", e)
         return cors_response(jsonify({'success': False, 'error': 'Failed to create user'})), 500
 
-# --- Login (unchanged) ---
+# --- Login (no backend JWT) ---
 @auth_bp.route('/api/login', methods=['POST', 'OPTIONS'])
 def login():
     if request.method == 'OPTIONS':
@@ -81,10 +81,10 @@ def login():
         db_query("UPDATE users SET last_login = NOW() WHERE id = %s", (user['id'],), commit=True)
     except Exception:
         logger.exception("Failed to update last_login")
-    token = generate_jwt(user['id'])
-    return cors_response(jsonify({'success': True, 'message': 'Login successful', 'user': {'id': user['id'], 'email': email}, 'token': token}))
+    # Return user info only, no token
+    return cors_response(jsonify({'success': True, 'message': 'Login successful', 'user': {'id': user['id'], 'email': email}}))
 
-# --- OAuth login (updated to generate backend JWT) ---
+# --- OAuth login (no backend JWT) ---
 @auth_bp.route('/api/oauth/login', methods=['POST', 'OPTIONS'])
 def oauth_login():
     if request.method == 'OPTIONS':
@@ -114,13 +114,13 @@ def oauth_login():
             user_id = row['id'] if row else None
         if not user_id:
             return cors_response(jsonify({'success': False, 'error': 'Failed to create/find user'})), 500
-        token = generate_jwt(user_id)
-        return cors_response(jsonify({'success': True, 'user': {'id': user_id, 'email': email}, 'token': token}))
+        # Return user info only, no token
+        return cors_response(jsonify({'success': True, 'user': {'id': user_id, 'email': email}}))
     except Exception:
         logger.exception("oauth_login error")
         return cors_response(jsonify({'success': False, 'error': 'Internal server error'})), 500
 
-# --- Logout (unchanged) ---
+# --- Logout ---
 @auth_bp.route('/api/logout', methods=['POST', 'OPTIONS'])
 @token_required
 def logout(user_id):
