@@ -107,29 +107,40 @@ def token_required(f):
             resp.headers['Access-Control-Allow-Credentials'] = "true"
             resp.headers['Access-Control-Max-Age'] = "86400"
             return resp
-        token, source = get_token_from_request()
-        user_id = None
-        if token:
-            user_id = verify_google_jwt(token)
-            logger.info(f"Google JWT auth attempt from {source}: user_id={user_id}")
-        if not user_id:
+
+        # Get token from header
+        auth = request.headers.get('Authorization', '')
+        if not auth.startswith('Bearer '):
             resp = jsonify({'success': False, 'error': 'Authentication required', 'code': 'UNAUTHORIZED'})
             resp.status_code = 401
-            origin = request.headers.get('Origin', '*')
-            resp.headers['Access-Control-Allow-Origin'] = origin
-            resp.headers['Access-Control-Allow-Credentials'] = 'true'
             return resp
-        user = get_user_by_id(user_id)
-        if not user:
-            resp = jsonify({'success': False, 'error': 'Invalid user', 'code': 'USER_NOT_FOUND'})
+
+        token = auth.split(' ', 1)[1].strip()
+        if not token:
+            resp = jsonify({'success': False, 'error': 'Authentication required', 'code': 'UNAUTHORIZED'})
             resp.status_code = 401
-            origin = request.headers.get('Origin', '*')
-            resp.headers['Access-Control-Allow-Origin'] = origin
-            resp.headers['Access-Control-Allow-Credentials'] = 'true'
             return resp
+
+        # Verify Google ID token
+        payload = verify_google_jwt(token)
+        if not payload:
+            resp = jsonify({'success': False, 'error': 'Invalid Google token', 'code': 'UNAUTHORIZED'})
+            resp.status_code = 401
+            return resp
+
+        # Get user from DB
+        email = payload.get('email', '').strip().lower()
+        user = get_user_by_email(email)
+        if not user:
+            resp = jsonify({'success': False, 'error': 'User not found', 'code': 'USER_NOT_FOUND'})
+            resp.status_code = 401
+            return resp
+
         request.user = user
-        return f(user_id, *args, **kwargs)
+        return f(user['id'], *args, **kwargs)
+
     return decorated
+
 def admin_required(f):
     @wraps(f)
     def decorated(user_id, *args, **kwargs):
