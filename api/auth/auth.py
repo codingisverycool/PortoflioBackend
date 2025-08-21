@@ -6,6 +6,9 @@ from flask import request, jsonify, make_response
 from google.auth.transport import requests as google_requests
 from google.oauth2 import id_token
 from api.database.db import db_query
+import jwt
+from datetime import datetime, timedelta
+
 # ----------------------
 # Logging
 # ----------------------
@@ -138,3 +141,23 @@ def admin_required(f):
             return jsonify({'success': False, 'error': 'Admin access required', 'code': 'FORBIDDEN'}), 403
         return f(user_id, *args, **kwargs)
     return decorated
+
+# ----------------------
+# Generate JWT for frontend/backend usage
+# ----------------------
+def generate_jwt(user_id):
+    """
+    Generate a JWT token for the given user_id.
+    """
+    secret = os.environ.get("JWT_SECRET_KEY") or "supersecretkey"
+    algo = os.environ.get("JWT_ALGORITHM") or "HS256"
+    expire_days = int(os.environ.get("JWT_EXPIRE_DAYS") or 7)
+
+    now = datetime.utcnow()
+    payload = {
+        "user_id": str(user_id),
+        "iat": now,
+        "exp": now + timedelta(days=expire_days),
+    }
+    token = jwt.encode(payload, secret, algorithm=algo)
+    return token
