@@ -1,4 +1,3 @@
-# api/auth/auth.py
 import os
 import logging
 import datetime
@@ -12,11 +11,11 @@ from api.database.db import db_query
 # ----------------------
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
-handler = logging.StreamHandler()
-handler.setFormatter(
-    logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-)
 if not logger.handlers:
+    handler = logging.StreamHandler()
+    handler.setFormatter(
+        logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    )
     logger.addHandler(handler)
 
 # ----------------------
@@ -27,49 +26,41 @@ def get_user_by_email(email):
         return None
     try:
         email = email.strip().lower()
-        row = db_query(
-            "SELECT * FROM users WHERE email = %s LIMIT 1",
-            (email,),
-            fetchone=True
-        )
+        row = db_query("SELECT * FROM users WHERE email = %s LIMIT 1", (email,), fetchone=True)
         return dict(row) if row else None
     except Exception as e:
-        logger.error(f"Error fetching user by email {email}: {str(e)}")
+        logger.error(f"Error fetching user by email {email}: {e}")
         return None
 
 def get_user_by_id(user_id):
     if not user_id:
         return None
     try:
-        row = db_query(
-            "SELECT * FROM users WHERE id = %s LIMIT 1",
-            (user_id,),
-            fetchone=True
-        )
+        row = db_query("SELECT * FROM users WHERE id = %s LIMIT 1", (user_id,), fetchone=True)
         return dict(row) if row else None
     except Exception as e:
-        logger.error(f"Error fetching user by ID {user_id}: {str(e)}")
+        logger.error(f"Error fetching user by ID {user_id}: {e}")
         return None
 
 # ----------------------
-# JWT Helpers
+# JWT helpers
 # ----------------------
 SECRET_KEY = os.environ.get("JWT_SECRET_KEY", "supersecret")
+JWT_ALGO = "HS256"
 
-def generate_jwt(user_id, email, expires_in=3600):
-    """Generate a backend JWT."""
+def generate_jwt(user_id, email, expires_in=7*24*3600):
+    """Generate a backend JWT for Flask APIs."""
     payload = {
-        "user_id": user_id,
+        "user_id": str(user_id),
         "email": email,
-        "exp": datetime.datetime.utcnow() + datetime.timedelta(seconds=expires_in),
         "iat": datetime.datetime.utcnow(),
+        "exp": datetime.datetime.utcnow() + datetime.timedelta(seconds=expires_in)
     }
-    return jwt.encode(payload, SECRET_KEY, algorithm="HS256")
+    return jwt.encode(payload, SECRET_KEY, algorithm=JWT_ALGO)
 
 def verify_jwt(token):
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
-        return payload
+        return jwt.decode(token, SECRET_KEY, algorithms=[JWT_ALGO])
     except jwt.ExpiredSignatureError:
         logger.warning("JWT expired")
         return None
@@ -78,15 +69,26 @@ def verify_jwt(token):
         return None
 
 # ----------------------
-# Token retrieval helper
+# Token retrieval
 # ----------------------
 def get_token_from_request():
-    auth = request.headers.get('Authorization', '')
-    if auth and auth.startswith('Bearer '):
-        token = auth.split(' ', 1)[1].strip()
-        if token:
-            return token, 'header'
-    return None, None
+    auth = request.headers.get("Authorization", "")
+    if auth.startswith("Bearer "):
+        return auth.split(" ", 1)[1].strip()
+    return None
+
+# ----------------------
+# CORS helper
+# ----------------------
+def cors_response(resp=None):
+    if resp is None:
+        resp = make_response()
+    origin = request.headers.get("Origin", "*")
+    resp.headers["Access-Control-Allow-Origin"] = origin
+    resp.headers["Access-Control-Allow-Credentials"] = "true"
+    resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+    resp.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+    return resp
 
 # ----------------------
 # Decorators
@@ -94,30 +96,23 @@ def get_token_from_request():
 def token_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
-        if request.method == 'OPTIONS':
-            resp = make_response()
-            origin = request.headers.get('Origin', '*')
-            resp.headers['Access-Control-Allow-Origin'] = origin
-            resp.headers['Access-Control-Allow-Methods'] = "GET, POST, PUT, DELETE, OPTIONS"
-            resp.headers['Access-Control-Allow-Headers'] = "Content-Type, Authorization, X-Requested-With"
-            resp.headers['Access-Control-Allow-Credentials'] = "true"
-            resp.headers['Access-Control-Max-Age'] = "86400"
-            return resp
+        if request.method == "OPTIONS":
+            return cors_response()
 
-        token, _ = get_token_from_request()
+        token = get_token_from_request()
         if not token:
-            return jsonify({'success': False, 'error': 'Authentication required'}), 401
+            return jsonify({"success": False, "error": "Authentication required"}), 401
 
         payload = verify_jwt(token)
         if not payload:
-            return jsonify({'success': False, 'error': 'Invalid or expired token'}), 401
+            return jsonify({"success": False, "error": "Invalid or expired token"}), 401
 
         user = get_user_by_id(payload.get("user_id"))
         if not user:
-            return jsonify({'success': False, 'error': 'User not found'}), 401
+            return jsonify({"success": False, "error": "User not found"}), 401
 
         request.user = user
-        return f(user['id'], *args, **kwargs)
+        return f(user["id"], *args, **kwargs)
 
     return decorated
 
@@ -125,7 +120,7 @@ def admin_required(f):
     @wraps(f)
     def decorated(user_id, *args, **kwargs):
         user = get_user_by_id(user_id)
-        if not user or user.get('role') != 'admin':
-            return jsonify({'success': False, 'error': 'Admin access required'}), 403
+        if not user or user.get("role") != "admin":
+            return jsonify({"success": False, "error": "Admin access required"}), 403
         return f(user_id, *args, **kwargs)
     return decorated

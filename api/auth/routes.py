@@ -2,124 +2,102 @@ import os
 import json
 import logging
 from flask import Blueprint, request, jsonify, make_response
-from flask_login import login_user, logout_user
+
 from werkzeug.security import generate_password_hash, check_password_hash
 
 from api.database.db import db_query
-from api.auth.auth import get_user_by_email, generate_jwt, token_required
+from api.auth.auth import get_user_by_email, generate_jwt, token_required, cors_response
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 
-auth_bp = Blueprint('auth_bp', __name__)
+auth_bp = Blueprint("auth_bp", __name__)
 
-# --- Helper to add CORS headers ---
-def cors_response(resp):
-    origin = request.headers.get('Origin', '*')
-    resp.headers['Access-Control-Allow-Origin'] = origin
-    resp.headers['Access-Control-Allow-Credentials'] = 'true'
-    resp.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
-    resp.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
-    return resp
-
-
-# --- Registration ---
-@auth_bp.route('/api/register', methods=['POST', 'OPTIONS'])
+# ----------------------
+# Registration (optional for Google-only)
+# ----------------------
+@auth_bp.route("/api/register", methods=["POST", "OPTIONS"])
 def register():
-    if request.method == 'OPTIONS':
+    if request.method == "OPTIONS":
         return cors_response(make_response())
 
-    data = request.json or request.form
-    email = (data.get('email') or '').strip().lower()
-    password = data.get('password')
-    confirm_password = data.get('confirm_password')
+    data = request.get_json() or {}
+    email = (data.get("email") or "").strip().lower()
+    password = data.get("password")
+    confirm_password = data.get("confirm_password")
 
     if not email or not password or not confirm_password:
-        return cors_response(jsonify({'success': False, 'error': 'Missing required fields'})), 400
+        return cors_response(jsonify({"success": False, "error": "Missing required fields"})), 400
     if password != confirm_password:
-        return cors_response(jsonify({'success': False, 'error': 'Passwords do not match'})), 400
+        return cors_response(jsonify({"success": False, "error": "Passwords do not match"})), 400
     if len(password) < 8:
-        return cors_response(jsonify({'success': False, 'error': 'Password must be at least 8 characters'})), 400
+        return cors_response(jsonify({"success": False, "error": "Password must be at least 8 characters"})), 400
 
     existing = db_query("SELECT id FROM users WHERE email = %s LIMIT 1", (email,), fetchone=True)
     if existing:
-        return cors_response(jsonify({'success': False, 'error': 'Email already registered'})), 400
+        return cors_response(jsonify({"success": False, "error": "Email already registered"})), 400
 
-    encrypted_pass = generate_password_hash(password, method='pbkdf2:sha256')
+    encrypted_pass = generate_password_hash(password, method="pbkdf2:sha256")
     try:
-        db_query("""
+        db_query(
+            """
             INSERT INTO users (email, encrypted_pass, verified, meta, created_at, updated_at)
-            VALUES (%s, %s, %s, %s::jsonb, NOW(), NOW());
-        """, (email, encrypted_pass, False, json.dumps({})), commit=True)
-        return cors_response(jsonify({'success': True, 'message': 'Account created. Please verify email if enabled.'})), 200
+            VALUES (%s, %s, %s, %s::jsonb, NOW(), NOW())
+            """,
+            (email, encrypted_pass, False, json.dumps({})),
+            commit=True,
+        )
+        return cors_response(jsonify({"success": True, "message": "Account created"})), 200
     except Exception as e:
         logger.exception("Failed to create user: %s", e)
-        return cors_response(jsonify({'success': False, 'error': 'Failed to create user'})), 500
+        return cors_response(jsonify({"success": False, "error": "Failed to create user"})), 500
 
 
-# --- Classic login (email + password) ---
-@auth_bp.route('/api/login', methods=['POST', 'OPTIONS'])
+# ----------------------
+# Classic login (optional if only Google)
+# ----------------------
+@auth_bp.route("/api/login", methods=["POST", "OPTIONS"])
 def classic_login():
-    if request.method == 'OPTIONS':
+    if request.method == "OPTIONS":
         return cors_response(make_response())
 
-    data = request.get_json() or request.form
-    email = (data.get('email') or '').strip().lower()
-    password = data.get('password') or ''
+    data = request.get_json() or {}
+    email = (data.get("email") or "").strip().lower()
+    password = data.get("password") or ""
 
     user = db_query("SELECT * FROM users WHERE email = %s LIMIT 1", (email,), fetchone=True)
     if not user:
-        return cors_response(jsonify({'success': False, 'error': 'User not found'})), 404
-    if not user.get('verified'):
-        return cors_response(jsonify({'success': False, 'error': 'Email not verified'})), 403
+        return cors_response(jsonify({"success": False, "error": "User not found"})), 404
 
-    encrypted = user.get('encrypted_pass')
-    if encrypted:
-        if not check_password_hash(encrypted, password):
-            return cors_response(jsonify({'success': False, 'error': 'Incorrect password'})), 401
-    else:
-        return cors_response(jsonify({'success': False, 'error': 'Use OAuth login'})), 401
+    encrypted = user.get("encrypted_pass")
+    if not encrypted or not check_password_hash(encrypted, password):
+        return cors_response(jsonify({"success": False, "error": "Incorrect password"})), 401
 
-    try:
-        uobj = type('U', (), {})()
-        uobj.id = str(user['id'])
-        uobj.email = user.get('email')
-        login_user(uobj)
-    except Exception:
-        logger.debug("Session login skipped/failed, continuing without JWT")
+    # Generate backend JWT
+    token = generate_jwt(user["id"], user["email"])
 
-    try:
-        db_query("UPDATE users SET last_login = NOW() WHERE id = %s", (user['id'],), commit=True)
-    except Exception:
-        logger.exception("Failed to update last_login")
-
-    return cors_response(jsonify({
-        'success': True,
-        'message': 'Login successful',
-        'user': {'id': user['id'], 'email': email}
-    }))
+    return cors_response(jsonify({"success": True, "token": token, "user": {"id": user["id"], "email": user["email"]}}))
 
 
-# --- OAuth login (Google via NextAuth) ---
-@auth_bp.route('/api/oauth/login', methods=['POST'])
+# ----------------------
+# OAuth login (Google via NextAuth)
+# ----------------------
+@auth_bp.route("/api/oauth/login", methods=["POST", "OPTIONS"])
 def oauth_login():
-    """
-    Called by frontend after Google sign-in via NextAuth.
-    Expects JSON body with: { "email": "...", "name": "..." }
-    """
+    if request.method == "OPTIONS":
+        return cors_response(make_response())
+
     try:
-        data = request.get_json()
-        email = data.get("email", "").strip().lower()
-        name = data.get("name", "").strip()
+        data = request.get_json() or {}
+        email = (data.get("email") or "").strip().lower()
+        name = data.get("name") or "User"
 
         if not email:
-            return jsonify({"success": False, "error": "Email is required"}), 400
+            return cors_response(jsonify({"success": False, "error": "Email required"})), 400
 
-        # Look up user
         user = get_user_by_email(email)
-
-        # If user does not exist, create it
         if not user:
+            # Create new user
             row = db_query(
                 """
                 INSERT INTO users (email, name, created_at, role)
@@ -132,36 +110,25 @@ def oauth_login():
             )
             user = dict(row)
 
-        # Generate backend JWT
         token = generate_jwt(user["id"], user["email"])
 
-        return jsonify({
-            "success": True,
-            "token": token,
-            "user": {
-                "id": user["id"],
-                "email": user["email"],
-                "name": user.get("name", ""),
-                "role": user.get("role", "user"),
-            }
-        })
+        return cors_response(jsonify({"success": True, "token": token, "user": user}))
 
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        logger.exception("OAuth login error: %s", e)
+        return cors_response(jsonify({"success": False, "error": str(e)})), 500
 
 
-# --- Logout ---
-@auth_bp.route('/api/logout', methods=['POST', 'OPTIONS'])
+# ----------------------
+# Logout
+# ----------------------
+@auth_bp.route("/api/logout", methods=["POST", "OPTIONS"])
 @token_required
 def logout(user_id):
-    if request.method == 'OPTIONS':
+    if request.method == "OPTIONS":
         return cors_response(make_response())
 
-    try:
-        logout_user()
-    except Exception:
-        pass
-
-    resp = make_response(jsonify({'success': True, 'message': 'Logged out successfully'}))
-    resp.set_cookie('access_token', '', expires=0, httponly=True, secure=True, samesite='None', path='/')
+    # No server session needed, just instruct frontend to remove token
+    resp = make_response(jsonify({"success": True, "message": "Logged out successfully"}))
+    resp.set_cookie("access_token", "", expires=0, httponly=True, secure=True, samesite="None", path="/")
     return cors_response(resp), 200

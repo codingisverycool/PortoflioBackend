@@ -2,81 +2,91 @@
 import logging
 from datetime import datetime
 import yfinance as yf
+from functools import lru_cache
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 
+
+@lru_cache(maxsize=512)
 def get_stock_info(ticker):
     """
-    Returns a normalized dict with price and metadata for a ticker.
-    If Yahoo fails, returns minimal fallback dict.
+    Fetch normalized stock info and price.
+    Uses caching to reduce Yahoo Finance API calls.
     """
+    ticker = ticker.upper()
+    fallback = {'price': 0.0, 'shortName': ticker, 'name': ticker,
+                'currency': 'N/A', 'exchange': 'N/A', 'sector': 'N/A'}
     try:
         stock = yf.Ticker(ticker)
         info = stock.info or {}
+        # Use regularMarketPrice if history is empty
+        price = info.get('regularMarketPrice', 0.0)
         hist = stock.history(period="1d")
-        price = float(hist['Close'].iloc[-1]) if not hist.empty else 0.0
+        if not hist.empty:
+            price = float(hist['Close'].iloc[-1])
         return {
             'price': price,
             'currency': info.get('currency', 'N/A'),
             'exchange': info.get('exchange', 'N/A'),
             'industry': info.get('industry', 'N/A'),
             'sector': info.get('sector', 'N/A'),
-            '52w_high': info.get('fiftyTwoWeekHigh', info.get('52WeekHigh')),
-            '52w_low': info.get('fiftyTwoWeekLow', info.get('52WeekLow')),
-            'shortName': info.get('shortName'),
-            'longName': info.get('longName'),
-            'name': info.get('shortName') or info.get('longName'),
-            'marketCap': info.get('marketCap'),
-            'trailingPE': info.get('trailingPE'),
-            'forwardPE': info.get('forwardPE'),
-            'pegRatio': info.get('pegRatio'),
-            'priceToSalesTrailing12Months': info.get('priceToSalesTrailing12Months'),
-            'priceToBook': info.get('priceToBook'),
-            'enterpriseToRevenue': info.get('enterpriseToRevenue'),
-            'enterpriseToEbitda': info.get('enterpriseToEbitda'),
-            'profitMargins': info.get('profitMargins'),
-            'returnOnAssets': info.get('returnOnAssets'),
-            'returnOnEquity': info.get('returnOnEquity'),
-            'totalRevenue': info.get('totalRevenue'),
-            'netIncomeToCommon': info.get('netIncomeToCommon'),
-            'trailingEps': info.get('trailingEps'),
-            'totalCash': info.get('totalCash'),
-            'debtToEquity': info.get('debtToEquity'),
-            'freeCashflow': info.get('freeCashflow')
+            '52w_high': info.get('fiftyTwoWeekHigh', info.get('52WeekHigh', price)),
+            '52w_low': info.get('fiftyTwoWeekLow', info.get('52WeekLow', price)),
+            'shortName': info.get('shortName', ticker),
+            'longName': info.get('longName', ticker),
+            'name': info.get('shortName') or info.get('longName') or ticker,
+            'marketCap': info.get('marketCap', 0),
+            'trailingPE': info.get('trailingPE', 0),
+            'forwardPE': info.get('forwardPE', 0),
+            'pegRatio': info.get('pegRatio', 0),
+            'priceToSalesTrailing12Months': info.get('priceToSalesTrailing12Months', 0),
+            'priceToBook': info.get('priceToBook', 0),
+            'enterpriseToRevenue': info.get('enterpriseToRevenue', 0),
+            'enterpriseToEbitda': info.get('enterpriseToEbitda', 0),
+            'profitMargins': info.get('profitMargins', 0),
+            'returnOnAssets': info.get('returnOnAssets', 0),
+            'returnOnEquity': info.get('returnOnEquity', 0),
+            'totalRevenue': info.get('totalRevenue', 0),
+            'netIncomeToCommon': info.get('netIncomeToCommon', 0),
+            'trailingEps': info.get('trailingEps', 0),
+            'totalCash': info.get('totalCash', 0),
+            'debtToEquity': info.get('debtToEquity', 0),
+            'freeCashflow': info.get('freeCashflow', 0)
         }
     except Exception as e:
         logger.exception("Error fetching data for %s: %s", ticker, e)
-        return {'price': 0.0, 'shortName': ticker, 'name': ticker, 'currency': 'N/A', 'exchange': 'N/A', 'sector': 'N/A'}
+        return fallback
 
 
 def calculate_portfolio_irr(transactions):
-    cash_flows = []
-    dates = []
+    """
+    Approximates IRR using annualized return from buy/sell cash flows.
+    """
+    cash_flows, dates = [], []
     for tx in transactions:
-        amount = tx['quantity'] * tx['price']
-        if tx['type'] == 'Buy':
-            amount = -amount
-        cash_flows.append(amount)
         try:
+            amount = tx['quantity'] * tx['price']
+            if tx['type'].lower() == 'buy':
+                amount = -amount
+            cash_flows.append(amount)
             dates.append(datetime.strptime(tx['date'], '%Y-%m-%d'))
         except Exception:
-            pass
-    if not cash_flows:
+            continue
+
+    if not cash_flows or not dates:
         return 0
+
     try:
         total_investment = sum(cf for cf in cash_flows if cf < 0)
         total_return = sum(cf for cf in cash_flows if cf > 0)
-        if dates:
-            days_held = max(1, (max(dates) - min(dates)).days)
-        else:
-            days_held = 1
+        days_held = max(1, (max(dates) - min(dates)).days)
         if total_investment == 0:
             return 0
         base = total_return / abs(total_investment)
         if base <= 0:
             return (base - 1) * 100
-        annualized_return = ((base) ** (365.0 / days_held) - 1) * 100
+        annualized_return = ((1 + base) ** (365.0 / days_held) - 1) * 100
         return annualized_return
     except Exception:
         logger.exception("Error calculating IRR")
@@ -84,14 +94,14 @@ def calculate_portfolio_irr(transactions):
 
 
 def calculate_realized_and_initial_investment(transactions):
-    lots = {}
-    realized_gains = {}
-    initial_investment = {}
+    """
+    Returns:
+        realized_gains, initial_investment, remaining_cost_basis, remaining_qty
+    """
+    lots, realized_gains, initial_investment = {}, {}, {}
     for tx in sorted(transactions, key=lambda x: x['date']):
         stock = tx['stock'].upper()
-        qty = int(tx['quantity'])
-        price = float(tx['price'])
-        type_ = tx['type']
+        qty, price, type_ = int(tx['quantity']), float(tx['price']), tx['type']
         lots.setdefault(stock, [])
         realized_gains.setdefault(stock, 0.0)
         initial_investment.setdefault(stock, 0.0)
@@ -99,11 +109,9 @@ def calculate_realized_and_initial_investment(transactions):
             lots[stock].append({'quantity': qty, 'price': price})
             initial_investment[stock] += qty * price
         elif type_ == 'Sell':
-            sell_qty = qty
-            sell_proceeds = sell_qty * price
-            cost_removed = 0.0
+            sell_qty, sell_proceeds, cost_removed = qty, qty * price, 0.0
             if not lots[stock]:
-                raise ValueError(f"No lots available to sell for {stock}")
+                raise ValueError(f"No lots to sell for {stock}")
             while sell_qty > 0 and lots[stock]:
                 lot = lots[stock][0]
                 lot_qty = lot['quantity']
@@ -116,65 +124,62 @@ def calculate_realized_and_initial_investment(transactions):
                     lot['quantity'] -= sell_qty
                     sell_qty = 0
             if sell_qty > 0:
-                raise ValueError(f"Trying to sell more shares ({qty}) than held for {stock}")
+                raise ValueError(f"Selling more than held for {stock}")
             realized_gains[stock] += sell_proceeds - cost_removed
-    remaining_qty = {}
-    remaining_cost_basis = {}
+
+    remaining_qty, remaining_cost_basis = {}, {}
     for stock, stock_lots in lots.items():
         qty = sum(l['quantity'] for l in stock_lots)
         cost = sum(l['quantity'] * l['price'] for l in stock_lots)
         remaining_qty[stock] = qty
         remaining_cost_basis[stock] = cost
+
     return realized_gains, initial_investment, remaining_cost_basis, remaining_qty
 
 
 def compute_holdings_from_transactions(transactions):
-    holdings = {}
-    lots = {}
-    realized_gains = {}
+    """
+    Computes current holdings with avg_cost and realized_gain
+    """
+    holdings, lots, realized_gains = {}, {}, {}
     for tx in sorted(transactions, key=lambda x: x['date']):
         stock = tx['stock'].upper()
-        quantity = int(tx['quantity'])
-        price = float(tx['price'])
-        date = tx['date']
-        type_ = tx['type']
+        qty, price, date, type_ = int(tx['quantity']), float(tx['price']), tx['date'], tx['type']
         if stock not in holdings:
             holdings[stock] = {'stock': stock, 'quantity': 0, 'total_cost': 0.0, 'first_buy_date': date}
             lots[stock] = []
             realized_gains[stock] = 0.0
+
         if type_ == 'Buy':
-            lots[stock].append({'quantity': quantity, 'price': price})
-            holdings[stock]['quantity'] += quantity
-            holdings[stock]['total_cost'] += quantity * price
+            lots[stock].append({'quantity': qty, 'price': price})
+            holdings[stock]['quantity'] += qty
+            holdings[stock]['total_cost'] += qty * price
             holdings[stock]['first_buy_date'] = min(holdings[stock]['first_buy_date'], date)
         elif type_ == 'Sell':
-            if holdings[stock]['quantity'] < quantity:
+            if holdings[stock]['quantity'] < qty:
                 continue
-            sell_quantity = quantity
-            sell_total = 0.0
-            cost_removed = 0.0
-            while sell_quantity > 0 and lots[stock]:
+            sell_qty, cost_removed = qty, 0.0
+            while sell_qty > 0 and lots[stock]:
                 lot = lots[stock][0]
                 lot_qty = lot['quantity']
-                if sell_quantity >= lot_qty:
-                    sell_total += lot_qty * price
+                if sell_qty >= lot_qty:
                     cost_removed += lot_qty * lot['price']
-                    sell_quantity -= lot_qty
+                    sell_qty -= lot_qty
                     lots[stock].pop(0)
                 else:
-                    sell_total += sell_quantity * price
-                    cost_removed += sell_quantity * lot['price']
-                    lot['quantity'] -= sell_quantity
-                    sell_quantity = 0
-            realized_gains[stock] += sell_total - cost_removed
-            holdings[stock]['quantity'] -= quantity
+                    cost_removed += sell_qty * lot['price']
+                    lot['quantity'] -= sell_qty
+                    sell_qty = 0
+            realized_gains[stock] += qty * price - cost_removed
+            holdings[stock]['quantity'] -= qty
             holdings[stock]['total_cost'] -= cost_removed
             if holdings[stock]['quantity'] <= 0:
                 del holdings[stock]
+
+    # finalize avg_cost
     for stock in list(holdings.keys()):
-        remaining_cost = holdings[stock]['total_cost']
-        qty = holdings[stock]['quantity']
-        avg_cost = remaining_cost / qty if qty > 0 else 0.0
-        holdings[stock]['avg_cost'] = avg_cost
+        qty, total_cost = holdings[stock]['quantity'], holdings[stock]['total_cost']
+        holdings[stock]['avg_cost'] = total_cost / qty if qty else 0.0
         holdings[stock]['realized_gain'] = realized_gains.get(stock, 0.0)
+
     return holdings

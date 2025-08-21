@@ -1,10 +1,7 @@
-# api/database/db.py
 import os
 import logging
 import json
-import re
 from urllib.parse import urlparse
-
 import psycopg2
 import psycopg2.extras
 from psycopg2.pool import SimpleConnectionPool
@@ -12,57 +9,56 @@ from psycopg2.pool import SimpleConnectionPool
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 
-DATABASE_URL = os.environ.get('DATABASE_URL')
+DATABASE_URL = os.environ.get("DATABASE_URL")
 
-# Basic validation of DATABASE_URL to avoid misuse or accidental exposing (not a replacement for proper infra)
+# ----------------------
+# Basic validation
+# ----------------------
 def _validate_database_url(url):
     if not url:
-        raise RuntimeError("DATABASE_URL not set. Set it in environment.")
+        raise RuntimeError("DATABASE_URL not set in environment")
     parsed = urlparse(url)
-    if parsed.scheme not in ('postgres', 'postgresql'):
-        raise RuntimeError("DATABASE_URL must be a postgres connection string.")
-    # Minimal safety check: do not allow arbitrary file paths etc in connection string
+    if parsed.scheme not in ("postgres", "postgresql"):
+        raise RuntimeError("DATABASE_URL must be a postgres connection string")
+    if not parsed.hostname or not parsed.path:
+        raise RuntimeError("DATABASE_URL missing hostname or database name")
     return url
 
 if DATABASE_URL:
     _validate_database_url(DATABASE_URL)
 
-_pool = None
+_pool: SimpleConnectionPool | None = None
 
+# ----------------------
+# Connection pool
+# ----------------------
 def get_pool(minconn=1, maxconn=10):
-    """
-    Create or return a connection pool.
-    Use parameterized min/max connections so tests can override if needed.
-    """
     global _pool
     if _pool is None:
         if not DATABASE_URL:
-            raise RuntimeError("DATABASE_URL not set. Set it in environment.")
-        # Use sslmode if provided via env (Vercel / managed PG may require)
+            raise RuntimeError("DATABASE_URL not set")
         _pool = SimpleConnectionPool(minconn, maxconn, dsn=DATABASE_URL)
     return _pool
 
 def get_conn():
-    """
-    Get a connection from the pool. Caller must call release_conn(conn) when finished.
-    """
     return get_pool().getconn()
 
 def release_conn(conn):
-    """
-    Put conn back in pool. Safe to call even if conn is None.
-    """
-    try:
-        if conn:
+    if conn:
+        try:
             get_pool().putconn(conn)
-    except Exception:
-        logger.exception("Error releasing DB connection")
+        except Exception:
+            logger.exception("Failed to release connection")
 
+# ----------------------
+# Query helper
+# ----------------------
 def db_query(sql, params=None, fetchone=False, fetchall=False, commit=False):
     """
-    Generic DB helper. Uses parameterized queries only (pass params tuple/list).
-    Rolls back on exception and always releases connection back to pool.
-    Avoids SQL injection by never formatting SQL with string interpolation.
+    Safe query execution:
+    - Always parameterized
+    - Rolls back on error
+    - Releases connection
     """
     conn = None
     try:
@@ -77,22 +73,44 @@ def db_query(sql, params=None, fetchone=False, fetchall=False, commit=False):
             if commit:
                 conn.commit()
             return result
-    except Exception:
-        try:
-            if conn:
+    except psycopg2.Error:
+        if conn:
+            try:
                 conn.rollback()
-        except Exception:
-            logger.exception("Failed to rollback connection after error")
+            except Exception:
+                logger.exception("Failed to rollback connection")
         logger.exception("db_query failed for SQL: %s params: %s", sql, params)
         raise
     finally:
         release_conn(conn)
 
+# ----------------------
+# Input sanitization helpers
+# ----------------------
+def safe_str(val: str) -> str:
+    """Strip whitespace and reject dangerous characters"""
+    if not val or not isinstance(val, str):
+        return ""
+    val = val.strip()
+    if len(val) > 255:
+        val = val[:255]
+    return val
 
+def safe_json(val) -> dict:
+    """Ensure JSON object, fallback to empty dict"""
+    if isinstance(val, dict):
+        return val
+    try:
+        return json.loads(val)
+    except Exception:
+        return {}
+
+# ----------------------
+# Table creation
+# ----------------------
 def ensure_tables():
-    """Create required tables if they don't exist."""
     if not DATABASE_URL:
-        logger.warning("DATABASE_URL not set; skipping table creation.")
+        logger.warning("DATABASE_URL not set; skipping table creation")
         return
 
     sql = """
@@ -122,15 +140,6 @@ def ensure_tables():
         UNIQUE (provider, provider_user_id)
     );
 
-    CREATE TABLE IF NOT EXISTS user_risk_profiles (
-        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-        user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-        profile_json JSONB NOT NULL,
-        total_score INTEGER,
-        risk_bracket VARCHAR(100),
-        created_at TIMESTAMPTZ DEFAULT NOW()
-    );
-
     CREATE TABLE IF NOT EXISTS transactions (
         id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
         user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -153,5 +162,10 @@ def ensure_tables():
         with conn.cursor() as cur:
             cur.execute(sql)
             conn.commit()
+    except Exception:
+        logger.exception("Failed to ensure tables")
+        if conn:
+            conn.rollback()
+        raise
     finally:
         release_conn(conn)
