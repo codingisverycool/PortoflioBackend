@@ -1,13 +1,13 @@
 # api/auth/auth.py
 import os
 import logging
+import jwt
+from datetime import datetime, timedelta
 from functools import wraps
 from flask import request, jsonify, make_response
 from google.auth.transport import requests as google_requests
 from google.oauth2 import id_token
 from api.database.db import db_query
-import jwt
-from datetime import datetime, timedelta
 
 # ----------------------
 # Logging
@@ -56,11 +56,11 @@ def get_user_by_id(user_id):
 
 # ----------------------
 # Verify Google ID Token
-# Google JWT verification
+# Only used at login
 # ----------------------
 def verify_google_jwt(token):
     """
-    Verifies a Google ID token using google-auth library.
+    Verifies a Google ID token (JWT) using google-auth library.
     Returns the Google 'sub' field (user ID) if valid, else None.
     """
     try:
@@ -80,37 +80,16 @@ def verify_google_jwt(token):
         return None
 
 # ----------------------
-# Backend JWT generation for frontend
+# Generate backend JWT for frontend
 # ----------------------
-JWT_SECRET = os.environ.get('JWT_SECRET', 'dev-secret')
-JWT_ALGORITHM = 'HS256'
-JWT_EXPIRE_MINUTES = 60 * 24 * 7  # 7 days
-
 def generate_jwt(user_id):
-    """
-    Generate a backend JWT for the frontend to use.
-    """
+    secret = os.environ.get("JWT_SECRET", "supersecret")
     payload = {
-        'user_id': str(user_id),
-        'exp': datetime.utcnow() + timedelta(minutes=JWT_EXPIRE_MINUTES),
-        'iat': datetime.utcnow()
+        "user_id": str(user_id),
+        "exp": datetime.utcnow() + timedelta(days=7)
     }
-    token = jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+    token = jwt.encode(payload, secret, algorithm="HS256")
     return token
-
-def verify_jwt(token):
-    """
-    Verify backend JWT
-    """
-    try:
-        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
-        return payload.get('user_id')
-    except jwt.ExpiredSignatureError:
-        logger.warning("Backend JWT expired")
-        return None
-    except jwt.InvalidTokenError:
-        logger.warning("Invalid backend JWT")
-        return None
 
 # ----------------------
 # Token retrieval helper
@@ -120,8 +99,8 @@ def get_token_from_request():
     if auth and auth.startswith('Bearer '):
         token = auth.split(' ', 1)[1].strip()
         if token:
-            return token, 'header'
-    return None, None
+            return token
+    return None
 
 # ----------------------
 # Decorators
@@ -138,29 +117,29 @@ def token_required(f):
             resp.headers['Access-Control-Allow-Credentials'] = "true"
             resp.headers['Access-Control-Max-Age'] = "86400"
             return resp
-        token, source = get_token_from_request()
+
+        token = get_token_from_request()
         user_id = None
         if token:
-            # Keep existing Google JWT logic for login
-            user_id = verify_google_jwt(token)
-            logger.info(f"Google JWT auth attempt from {source}: user_id={user_id}")
+            try:
+                secret = os.environ.get("JWT_SECRET", "supersecret")
+                decoded = jwt.decode(token, secret, algorithms=["HS256"])
+                user_id = decoded.get("user_id")
+            except jwt.ExpiredSignatureError:
+                return jsonify({"success": False, "error": "Token expired"}), 401
+            except jwt.InvalidTokenError:
+                return jsonify({"success": False, "error": "Invalid token"}), 401
+
         if not user_id:
-            resp = jsonify({'success': False, 'error': 'Authentication required', 'code': 'UNAUTHORIZED'})
-            resp.status_code = 401
-            origin = request.headers.get('Origin', '*')
-            resp.headers['Access-Control-Allow-Origin'] = origin
-            resp.headers['Access-Control-Allow-Credentials'] = 'true'
-            return resp
+            return jsonify({"success": False, "error": "Authentication required"}), 401
+
         user = get_user_by_id(user_id)
         if not user:
-            resp = jsonify({'success': False, 'error': 'Invalid user', 'code': 'USER_NOT_FOUND'})
-            resp.status_code = 401
-            origin = request.headers.get('Origin', '*')
-            resp.headers['Access-Control-Allow-Origin'] = origin
-            resp.headers['Access-Control-Allow-Credentials'] = 'true'
-            return resp
+            return jsonify({"success": False, "error": "User not found"}), 401
+
         request.user = user
         return f(user_id, *args, **kwargs)
+
     return decorated
 
 def admin_required(f):
@@ -168,6 +147,6 @@ def admin_required(f):
     def decorated(user_id, *args, **kwargs):
         user = get_user_by_id(user_id)
         if not user or user.get('role') != 'admin':
-            return jsonify({'success': False, 'error': 'Admin access required', 'code': 'FORBIDDEN'}), 403
+            return jsonify({'success': False, 'error': 'Admin access required'}), 403
         return f(user_id, *args, **kwargs)
     return decorated
