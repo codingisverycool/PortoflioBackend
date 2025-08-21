@@ -21,7 +21,7 @@ if not logger.handlers:
     logger.addHandler(handler)
 
 # ----------------------
-# Helper functions
+# User helpers
 # ----------------------
 def get_user_by_email(email):
     if not email or not isinstance(email, str):
@@ -53,7 +53,7 @@ def get_user_by_id(user_id):
         return None
 
 # ----------------------
-# Verify Google ID Token
+# Google JWT verification
 # ----------------------
 def verify_google_jwt(token):
     """
@@ -61,7 +61,6 @@ def verify_google_jwt(token):
     Returns the Google 'sub' field (user ID) if valid, else None.
     """
     try:
-        # NOTE: audience should match your Google Client ID
         CLIENT_ID = os.environ.get('GOOGLE_CLIENT_ID')
         payload = id_token.verify_oauth2_token(token, google_requests.Request(), CLIENT_ID)
 
@@ -84,8 +83,7 @@ def verify_google_jwt(token):
 # ----------------------
 def get_token_from_request():
     """
-    Attempt to obtain a JWT token from:
-      1) Authorization header: 'Bearer <token>'
+    Attempt to obtain a JWT token from Authorization header: 'Bearer <token>'
     Returns (token, source) or (None, None).
     """
     auth = request.headers.get('Authorization', '')
