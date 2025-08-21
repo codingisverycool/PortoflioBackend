@@ -135,6 +135,10 @@ def token_required(f):
             resp = jsonify({'success': False, 'error': 'User not found', 'code': 'USER_NOT_FOUND'})
             resp.status_code = 401
             return resp
+        
+        print("Authorization header:", request.headers.get("Authorization"))
+        print("Payload:", payload)
+
 
         request.user = user
         return f(user['id'], *args, **kwargs)
