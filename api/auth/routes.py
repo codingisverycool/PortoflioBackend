@@ -6,7 +6,7 @@ from flask_login import login_user, logout_user
 from werkzeug.security import generate_password_hash, check_password_hash
 
 from api.database.db import db_query
-from api.auth.auth import token_required, verify_google_jwt  # <-- no generate_jwt now
+from api.auth.auth import token_required, verify_google_jwt  
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
