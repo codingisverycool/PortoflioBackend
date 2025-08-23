@@ -6,7 +6,7 @@ from flask import Blueprint, request, jsonify, make_response
 from collections import defaultdict
 import pandas as pd
 
-from api.auth.auth import token_required, get_user_by_id
+from api.auth.auth import token_required, get_user_by_email
 from api.database.db import db_query, safe_str
 from api.finance.models import fetch_transactions_for_user, insert_transaction_locked
 from api.finance.utils import get_stock_info, calculate_realized_and_initial_investment, compute_holdings_from_transactions, calculate_portfolio_irr
@@ -123,7 +123,7 @@ def portfolio_tracker_api(user_id):
         return _cors_options()
 
     try:
-        user_row = get_user_by_id(user_id)
+        user_row = get_user_by_email(user_id)
         user_email = user_row.get('email') if user_row else None
 
         transactions = fetch_transactions_for_user(user_id)
