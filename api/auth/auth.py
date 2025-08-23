@@ -2,7 +2,7 @@ import os
 import logging
 import datetime
 import jwt
-
+from functools import wraps
 from flask import request, jsonify, g
 from flask_login import login_user, logout_user
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -41,7 +41,6 @@ def generate_jwt(user_id):
     """Generate JWT token for user"""
     now = datetime.datetime.utcnow()
     exp = now + datetime.timedelta(days=JWT_EXPIRE_DAYS)
-
     payload = {
         "user_id": str(user_id),
         "iss": JWT_ISS,
@@ -49,7 +48,6 @@ def generate_jwt(user_id):
         "iat": now,
         "exp": exp,
     }
-
     try:
         token = jwt.encode(payload, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
         logger.debug("Generated JWT for user %s: %s", user_id, token)
@@ -58,9 +56,8 @@ def generate_jwt(user_id):
         logger.error("Error generating JWT: %s", str(e), exc_info=True)
         return None
 
-
-def decode_jwt(token):
-    """Decode JWT token"""
+def decode_jwt(token: str):
+    """Decode JWT token and convert user_id to UUID"""
     try:
         logger.debug("Attempting to decode JWT: %s", token)
         decoded = jwt.decode(
@@ -68,10 +65,19 @@ def decode_jwt(token):
             JWT_SECRET_KEY,
             algorithms=[JWT_ALGORITHM],
             audience=JWT_AUD,
-            issuer=JWT_ISS,
+            issuer=JWT_ISS
         )
+
+        # Convert user_id to UUID if possible
+        try:
+            decoded['user_id'] = uuid.UUID(decoded['user_id'])
+        except (ValueError, TypeError):
+            logger.error("Invalid user_id in JWT: %s", decoded.get('user_id'))
+            return None
+
         logger.debug("Decoded JWT payload: %s", decoded)
         return decoded
+
     except jwt.ExpiredSignatureError:
         logger.warning("JWT expired")
     except jwt.InvalidTokenError as e:
@@ -81,8 +87,7 @@ def decode_jwt(token):
     return None
 
 def token_required(f):
-    from functools import wraps
-
+    """Decorator to protect routes and inject user into flask.g"""
     @wraps(f)
     def decorated(*args, **kwargs):
         auth_header = request.headers.get("Authorization", None)
@@ -98,15 +103,10 @@ def token_required(f):
             logger.warning("Token decode failed, rejecting request")
             return jsonify({"message": "Invalid or expired token"}), 401
 
-        # Convert user_id to UUID here
-        try:
-            decoded['user_id'] = uuid.UUID(decoded['user_id'])
-        except (ValueError, KeyError):
-            logger.error("Invalid user_id in JWT: %s", decoded.get('user_id'))
-            return jsonify({'success': False, 'error': 'Invalid user ID'}), 400
-
+        # ✅ Inject user into flask.g for any route
         g.current_user = decoded
         logger.debug("JWT successfully validated for user %s", decoded['user_id'])
+
         return f(*args, **kwargs)
 
     return decorated
@@ -115,7 +115,7 @@ def token_required(f):
 # Example login endpoint (kept intact)
 def login(email, password):
     logger.debug("Login attempt for email: %s", email)
-    user = get_user_by_email(email)
+    user = db_query("SELECT id, email, password FROM users WHERE email = %s", (email,), fetchone=True)
 
     if not user:
         logger.warning("User not found for email: %s", email)
@@ -162,6 +162,7 @@ def verify_jwt_token(token: str):
 
 def cors_response(data, status=200):
     """Return JSON response with CORS headers attached."""
+    from flask import jsonify
     response = jsonify(data)
     response.status_code = status
     response.headers.add("Access-Control-Allow-Origin", "*")
