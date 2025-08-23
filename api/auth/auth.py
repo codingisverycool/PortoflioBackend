@@ -3,7 +3,7 @@ import logging
 import datetime
 import jwt
 
-from flask import request, jsonify
+from flask import request, jsonify, g
 from flask_login import login_user, logout_user
 from werkzeug.security import generate_password_hash, check_password_hash
 
@@ -82,7 +82,6 @@ def decode_jwt(token):
 
 
 def token_required(f):
-    """Decorator to require JWT token for Flask routes"""
     from functools import wraps
 
     @wraps(f)
@@ -101,7 +100,10 @@ def token_required(f):
             return jsonify({"message": "Invalid or expired token"}), 401
 
         logger.debug("JWT successfully validated for user %s", decoded.get("user_id"))
-        return f(*args, **kwargs, current_user=decoded)
+
+        # ✅ inject into flask.g instead of passing kwargs
+        g.current_user = decoded
+        return f(*args, **kwargs)
 
     return decorated
 
