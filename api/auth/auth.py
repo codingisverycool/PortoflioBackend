@@ -151,3 +151,14 @@ def verify_jwt_token(token: str):
     except Exception as e:
         logger.warning("❌ Invalid JWT: %s", str(e))
     return None
+
+
+
+def cors_response(data, status=200):
+    """Return JSON response with CORS headers attached."""
+    response = jsonify(data)
+    response.status_code = status
+    response.headers.add("Access-Control-Allow-Origin", "*")
+    response.headers.add("Access-Control-Allow-Headers", "Content-Type,Authorization")
+    response.headers.add("Access-Control-Allow-Methods", "GET,POST,OPTIONS,PUT,DELETE")
+    return response
