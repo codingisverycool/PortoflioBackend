@@ -2,125 +2,129 @@ import os
 import logging
 import datetime
 import jwt
-from functools import wraps
-from flask import request, jsonify, make_response
+
+from flask import request, jsonify
+from flask_login import login_user, logout_user
+from werkzeug.security import generate_password_hash, check_password_hash
+
 from api.database.db import db_query
 
-# ----------------------
-# Logging
-# ----------------------
+# --- Logging setup ---
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
 if not logger.handlers:
     handler = logging.StreamHandler()
-    handler.setFormatter(
-        logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    formatter = logging.Formatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     )
+    handler.setFormatter(formatter)
     logger.addHandler(handler)
+    logger.setLevel(logging.DEBUG)
 
-# ----------------------
-# User helpers
-# ----------------------
+# --- JWT Settings ---
+JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "dev_secret_key")
+JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
+JWT_EXPIRE_DAYS = int(os.getenv("JWT_EXPIRE_DAYS", "7"))
+JWT_ISS = os.getenv("BACKEND_JWT_ISS", "your-app-name")
+JWT_AUD = os.getenv("BACKEND_JWT_AUD", "your-app-client")
+
+
 def get_user_by_email(email):
-    if not email or not isinstance(email, str):
-        return None
-    try:
-        email = email.strip().lower()
-        row = db_query("SELECT * FROM users WHERE email = %s LIMIT 1", (email,), fetchone=True)
-        return dict(row) if row else None
-    except Exception as e:
-        logger.error(f"Error fetching user by email {email}: {e}")
-        return None
+    """Fetch user by email from DB"""
+    logger.debug("Fetching user by email: %s", email)
+    sql = "SELECT id, email, password FROM users WHERE email = %s"
+    result = db_query(sql, (email,), fetchone=True)
+    logger.debug("DB result for email %s: %s", email, result)
+    return result
 
-def get_user_by_id(user_id):
-    if not user_id:
-        return None
-    try:
-        row = db_query("SELECT * FROM users WHERE id = %s LIMIT 1", (user_id,), fetchone=True)
-        return dict(row) if row else None
-    except Exception as e:
-        logger.error(f"Error fetching user by ID {user_id}: {e}")
-        return None
 
-# ----------------------
-# JWT helpers
-# ----------------------
-SECRET_KEY = os.environ.get("JWT_SECRET_KEY", "supersecret")
-JWT_ALGO = "HS256"
+def generate_jwt(user_id):
+    """Generate JWT token for user"""
+    now = datetime.datetime.utcnow()
+    exp = now + datetime.timedelta(days=JWT_EXPIRE_DAYS)
 
-def generate_jwt(user_id, email, expires_in=7*24*3600):
-    """Generate a backend JWT for Flask APIs."""
     payload = {
         "user_id": str(user_id),
-        "email": email,
-        "iat": datetime.datetime.utcnow(),
-        "exp": datetime.datetime.utcnow() + datetime.timedelta(seconds=expires_in)
+        "iss": JWT_ISS,
+        "aud": JWT_AUD,
+        "iat": now,
+        "exp": exp,
     }
-    return jwt.encode(payload, SECRET_KEY, algorithm=JWT_ALGO)
 
-def verify_jwt(token):
     try:
-        return jwt.decode(token, SECRET_KEY, algorithms=[JWT_ALGO])
+        token = jwt.encode(payload, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
+        logger.debug("Generated JWT for user %s: %s", user_id, token)
+        return token
+    except Exception as e:
+        logger.error("Error generating JWT: %s", str(e), exc_info=True)
+        return None
+
+
+def decode_jwt(token):
+    """Decode JWT token"""
+    try:
+        logger.debug("Attempting to decode JWT: %s", token)
+        decoded = jwt.decode(
+            token,
+            JWT_SECRET_KEY,
+            algorithms=[JWT_ALGORITHM],
+            audience=JWT_AUD,
+            issuer=JWT_ISS,
+        )
+        logger.debug("Decoded JWT payload: %s", decoded)
+        return decoded
     except jwt.ExpiredSignatureError:
         logger.warning("JWT expired")
-        return None
-    except jwt.InvalidTokenError:
-        logger.warning("Invalid JWT")
-        return None
-
-# ----------------------
-# Token retrieval
-# ----------------------
-def get_token_from_request():
-    auth = request.headers.get("Authorization", "")
-    if auth.startswith("Bearer "):
-        return auth.split(" ", 1)[1].strip()
+    except jwt.InvalidTokenError as e:
+        logger.warning("Invalid JWT: %s", str(e))
+    except Exception as e:
+        logger.error("Unexpected error decoding JWT: %s", str(e), exc_info=True)
     return None
 
-# ----------------------
-# CORS helper
-# ----------------------
-def cors_response(resp=None):
-    if resp is None:
-        resp = make_response()
-    origin = request.headers.get("Origin", "*")
-    resp.headers["Access-Control-Allow-Origin"] = origin
-    resp.headers["Access-Control-Allow-Credentials"] = "true"
-    resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
-    resp.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
-    return resp
 
-# ----------------------
-# Decorators
-# ----------------------
 def token_required(f):
+    """Decorator to require JWT token for Flask routes"""
+    from functools import wraps
+
     @wraps(f)
     def decorated(*args, **kwargs):
-        if request.method == "OPTIONS":
-            return cors_response()
+        auth_header = request.headers.get("Authorization", None)
+        logger.debug("Authorization header: %s", auth_header)
 
-        token = get_token_from_request()
-        if not token:
-            return jsonify({"success": False, "error": "Authentication required"}), 401
+        if not auth_header or not auth_header.startswith("Bearer "):
+            logger.warning("Missing or invalid Authorization header")
+            return jsonify({"message": "Missing or invalid token"}), 401
 
-        payload = verify_jwt(token)
-        if not payload:
-            return jsonify({"success": False, "error": "Invalid or expired token"}), 401
+        token = auth_header.split(" ")[1]
+        decoded = decode_jwt(token)
+        if not decoded:
+            logger.warning("Token decode failed, rejecting request")
+            return jsonify({"message": "Invalid or expired token"}), 401
 
-        user = get_user_by_id(payload.get("user_id"))
-        if not user:
-            return jsonify({"success": False, "error": "User not found"}), 401
-
-        request.user = user
-        return f(user["id"], *args, **kwargs)
+        logger.debug("JWT successfully validated for user %s", decoded.get("user_id"))
+        return f(*args, **kwargs, current_user=decoded)
 
     return decorated
 
-def admin_required(f):
-    @wraps(f)
-    def decorated(user_id, *args, **kwargs):
-        user = get_user_by_id(user_id)
-        if not user or user.get("role") != "admin":
-            return jsonify({"success": False, "error": "Admin access required"}), 403
-        return f(user_id, *args, **kwargs)
-    return decorated
+
+# Example login endpoint (kept intact)
+def login(email, password):
+    logger.debug("Login attempt for email: %s", email)
+    user = get_user_by_email(email)
+
+    if not user:
+        logger.warning("User not found for email: %s", email)
+        return None
+
+    if not check_password_hash(user["password"], password):
+        logger.warning("Password check failed for email: %s", email)
+        return None
+
+    login_user(user)
+    token = generate_jwt(user["id"])
+    logger.info("User %s logged in successfully", user["id"])
+    return token
+
+
+def logout():
+    logger.info("Logging out current user")
+    logout_user()
