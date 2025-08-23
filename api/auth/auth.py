@@ -6,7 +6,7 @@ import jwt
 from flask import request, jsonify, g
 from flask_login import login_user, logout_user
 from werkzeug.security import generate_password_hash, check_password_hash
-
+import uuid
 from api.database.db import db_query
 
 # --- Logging setup ---
@@ -80,7 +80,6 @@ def decode_jwt(token):
         logger.error("Unexpected error decoding JWT: %s", str(e), exc_info=True)
     return None
 
-
 def token_required(f):
     from functools import wraps
 
@@ -99,10 +98,15 @@ def token_required(f):
             logger.warning("Token decode failed, rejecting request")
             return jsonify({"message": "Invalid or expired token"}), 401
 
-        logger.debug("JWT successfully validated for user %s", decoded.get("user_id"))
+        # Convert user_id to UUID here
+        try:
+            decoded['user_id'] = uuid.UUID(decoded['user_id'])
+        except (ValueError, KeyError):
+            logger.error("Invalid user_id in JWT: %s", decoded.get('user_id'))
+            return jsonify({'success': False, 'error': 'Invalid user ID'}), 400
 
-        # ✅ inject into flask.g instead of passing kwargs
         g.current_user = decoded
+        logger.debug("JWT successfully validated for user %s", decoded['user_id'])
         return f(*args, **kwargs)
 
     return decorated
