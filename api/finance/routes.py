@@ -2,7 +2,7 @@
 import json
 import logging
 from datetime import datetime
-from flask import Blueprint, request, jsonify, make_response
+from flask import Blueprint, request, jsonify, make_response, g
 from collections import defaultdict
 import pandas as pd
 
@@ -15,7 +15,6 @@ logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 
 finance_bp = Blueprint('finance_bp', __name__)
-
 
 # ----------------------
 # Helper: handle OPTIONS
@@ -31,11 +30,11 @@ def _cors_options():
     })
     return resp
 
-
 # --- Transactions ---
 @finance_bp.route('/api/transactions', methods=['GET', 'POST', 'OPTIONS'])
 @token_required
-def transactions_api(user_id):
+def transactions_api():
+    user_id = g.current_user.get("user_id")
     if request.method == 'OPTIONS':
         return _cors_options()
 
@@ -114,11 +113,11 @@ def transactions_api(user_id):
         logger.exception("Invalid transaction input for user %s: %s", user_id, e)
         return jsonify({'success': False, 'error': "Invalid input"}), 400
 
-
 # --- Portfolio ---
 @finance_bp.route('/api/portfolio', methods=['GET', 'OPTIONS'])
 @token_required
-def portfolio_tracker_api(user_id):
+def portfolio_tracker_api():
+    user_id = g.current_user.get("user_id")
     if request.method == 'OPTIONS':
         return _cors_options()
 
@@ -204,11 +203,11 @@ def portfolio_tracker_api(user_id):
         logger.exception("Portfolio tracker error for user %s: %s", user_id, e)
         return jsonify({'success': False, 'error': 'Failed to load portfolio'}), 500
 
-
 # --- Valuation ---
 @finance_bp.route('/api/valuation', methods=['GET', 'OPTIONS'])
 @token_required
-def valuation_dashboard_api(user_id):
+def valuation_dashboard_api():
+    user_id = g.current_user.get("user_id")
     if request.method == 'OPTIONS':
         return _cors_options()
 
@@ -286,11 +285,11 @@ def valuation_dashboard_api(user_id):
         logger.exception("Valuation dashboard error for user %s: %s", user_id, e)
         return jsonify({'success': False, 'error': "Error loading valuation data"}), 500
 
-
 # --- Clear transactions ---
 @finance_bp.route('/api/clear_transactions', methods=['POST', 'OPTIONS'])
 @token_required
-def clear_transactions_api(user_id):
+def clear_transactions_api():
+    user_id = g.current_user.get("user_id")
     if request.method == 'OPTIONS':
         return _cors_options()
     try:
