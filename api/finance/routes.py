@@ -21,9 +21,7 @@ logger.addHandler(logging.NullHandler())
 
 finance_bp = Blueprint('finance_bp', __name__)
 
-# ----------------------
-# Helper: handle OPTIONS
-# ----------------------
+# ---------------------- Helper: handle OPTIONS ----------------------
 def _cors_options():
     resp = make_response()
     origin = request.headers.get('Origin', '*')
@@ -35,26 +33,18 @@ def _cors_options():
     })
     return resp
 
-# ----------------------
-# Helper: fetch UUID from email
-# ----------------------
-def get_user_id_by_email(email: str) -> str | None:
-    if not email:
-        return None
-    row = db_query("SELECT id FROM users WHERE email = %s LIMIT 1", (email,), fetchone=True)
-    return row['id'] if row else None
-
-# --- Transactions ---
+# ---------------------- Transactions ----------------------
 @finance_bp.route('/api/transactions', methods=['GET', 'POST', 'OPTIONS'])
 @google_jwt_required
 def transactions_api():
-    user_email = request.user_info.get("email")
     if request.method == 'OPTIONS':
         return _cors_options()
 
-    user_id = get_user_id_by_email(user_email)
+    user = request.user
+    user_id = user.get("id")
+    user_email = user.get("email")
     if not user_id:
-        return jsonify({'success': False, 'error': "User not found"}), 404
+        return jsonify({'success': False, 'error': "user_id missing"}), 400
 
     if request.method == 'GET':
         try:
@@ -131,17 +121,18 @@ def transactions_api():
         logger.exception("Invalid transaction input for user %s: %s", user_email, e)
         return jsonify({'success': False, 'error': "Invalid input"}), 400
 
-# --- Portfolio ---
+# ---------------------- Portfolio ----------------------
 @finance_bp.route('/api/portfolio', methods=['GET', 'OPTIONS'])
 @google_jwt_required
 def portfolio_tracker_api():
-    user_email = request.user_info.get("email")
     if request.method == 'OPTIONS':
         return _cors_options()
 
-    user_id = get_user_id_by_email(user_email)
+    user = request.user
+    user_id = user.get("id")
+    user_email = user.get("email")
     if not user_id:
-        return jsonify({'success': False, 'error': "User not found"}), 404
+        return jsonify({'success': False, 'error': "user_id missing"}), 400
 
     try:
         transactions = fetch_transactions_for_user(user_id)
@@ -220,17 +211,18 @@ def portfolio_tracker_api():
         logger.exception("Portfolio tracker error for user %s: %s", user_email, e)
         return jsonify({'success': False, 'error': 'Failed to load portfolio'}), 500
 
-# --- Valuation ---
+# ---------------------- Valuation ----------------------
 @finance_bp.route('/api/valuation', methods=['GET', 'OPTIONS'])
 @google_jwt_required
 def valuation_dashboard_api():
-    user_email = request.user_info.get("email")
     if request.method == 'OPTIONS':
         return _cors_options()
 
-    user_id = get_user_id_by_email(user_email)
+    user = request.user
+    user_id = user.get("id")
+    user_email = user.get("email")
     if not user_id:
-        return jsonify({'success': False, 'error': "User not found"}), 404
+        return jsonify({'success': False, 'error': "user_id missing"}), 400
 
     try:
         transactions = fetch_transactions_for_user(user_id)
@@ -305,17 +297,18 @@ def valuation_dashboard_api():
         logger.exception("Valuation dashboard error for user %s: %s", user_email, e)
         return jsonify({'success': False, 'error': "Error loading valuation data"}), 500
 
-# --- Clear transactions ---
+# ---------------------- Clear transactions ----------------------
 @finance_bp.route('/api/clear_transactions', methods=['POST', 'OPTIONS'])
 @google_jwt_required
 def clear_transactions_api():
-    user_email = request.user_info.get("email")
     if request.method == 'OPTIONS':
         return _cors_options()
 
-    user_id = get_user_id_by_email(user_email)
+    user = request.user
+    user_id = user.get("id")
+    user_email = user.get("email")
     if not user_id:
-        return jsonify({'success': False, 'error': "User not found"}), 404
+        return jsonify({'success': False, 'error': "user_id missing"}), 400
 
     try:
         db_query("DELETE FROM transactions WHERE user_id = %s", (user_id,), commit=True)
