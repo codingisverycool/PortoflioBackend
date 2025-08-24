@@ -1,11 +1,12 @@
 # api/finance/models.py
 from api.database.db import db_query, get_conn, release_conn, safe_str
 from datetime import datetime
+from typing import List, Dict
 
 # ----------------------
 # Fetch transactions safely
 # ----------------------
-def fetch_transactions_for_user(user_id: str) -> list[dict]:
+def fetch_transactions_for_user(user_id: str) -> List[Dict]:
     """
     Returns list of user's transactions.
     """

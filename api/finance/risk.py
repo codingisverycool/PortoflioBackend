@@ -80,54 +80,41 @@ def submit_risk():
         if not isinstance(data, dict):
             return jsonify({"success": False, "error": "Invalid payload"}), 400
 
-        # Compute total score
-        total_score = sum(
-            _score_for_question(q, data.get(q.get("id")))
-            for q in RISK_QUESTIONNAIRE["questions"]
-        )
+        user_id = data.get("user_id")  # Required for UUID linkage
+        if not user_id:
+            return jsonify({"success": False, "error": "user_id missing"}), 400
 
-        # Determine risk bracket
+        total_score = sum(_score_for_question(q, data.get(q.get("id"))) for q in RISK_QUESTIONNAIRE["questions"])
+
         risk_bracket = "Undetermined"
         for bracket in RISK_QUESTIONNAIRE["risk_brackets"]:
             if bracket["min"] <= total_score <= bracket["max"]:
                 risk_bracket = bracket["name"]
                 break
 
-        # Sanitize client details
-        client_details = {
-            "name": safe_str(data.get("applicantName")),
-            "address": safe_str(data.get("applicantAddress")),
-            "advisor_name": safe_str(data.get("advisorName")),
-            "advisor_designation": safe_str(data.get("advisorDesignation")),
-            "assessment_date": safe_str(data.get("assessmentDate")),
-            "assessment_place": safe_str(data.get("assessmentPlace")),
-        }
-
         profile_data = {
             "submitted_at": datetime.utcnow().isoformat(),
-            "client_details": client_details,
+            "client_details": {
+                "name": safe_str(data.get("applicantName")),
+                "address": safe_str(data.get("applicantAddress")),
+                "advisor_name": safe_str(data.get("advisorName")),
+                "advisor_designation": safe_str(data.get("advisorDesignation")),
+                "assessment_date": safe_str(data.get("assessmentDate")),
+                "assessment_place": safe_str(data.get("assessmentPlace")),
+            },
             "signature": safe_str(data.get("applicantSignature")),
             "total_score": total_score,
             "risk_bracket": risk_bracket,
-            "interested_investments": (
-                data.get("interestedInvestments")
-                if isinstance(data.get("interestedInvestments"), list)
-                else []
-            ),
-            "answers": (
-                data.get("answers")
-                if isinstance(data.get("answers"), dict)
-                else {}
-            ),
+            "interested_investments": data.get("interestedInvestments") if isinstance(data.get("interestedInvestments"), list) else [],
+            "answers": data.get("answers") if isinstance(data.get("answers"), dict) else {},
         }
 
-        # Insert into DB (no user_id since auth handled in frontend for now)
         db_query(
             """
-            INSERT INTO user_risk_profiles (profile_json, total_score, risk_bracket, created_at)
-            VALUES (%s::jsonb, %s, %s, NOW());
+            INSERT INTO user_risk_profiles (user_id, profile_json, total_score, risk_bracket, created_at)
+            VALUES (%s, %s::jsonb, %s, %s, NOW())
             """,
-            (json.dumps(profile_data), total_score, risk_bracket),
+            (user_id, json.dumps(profile_data), total_score, risk_bracket),
             commit=True,
         )
 
@@ -139,14 +126,20 @@ def submit_risk():
 
 @risk_bp.route("/api/risk/check", methods=["GET"])
 def check_risk_assessment():
+    user_id = request.args.get("user_id")
+    if not user_id:
+        return jsonify({"success": False, "error": "user_id missing"}), 400
+
     try:
         row = db_query(
             """
             SELECT profile_json
             FROM user_risk_profiles
+            WHERE user_id = %s
             ORDER BY created_at DESC
-            LIMIT 1;
+            LIMIT 1
             """,
+            (user_id,),
             fetchone=True,
         )
         if row:

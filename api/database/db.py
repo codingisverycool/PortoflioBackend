@@ -1,3 +1,5 @@
+# api/database/db.py
+
 import os
 import logging
 import json
@@ -10,6 +12,7 @@ logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
+
 
 # ----------------------
 # Basic validation
@@ -24,10 +27,12 @@ def _validate_database_url(url):
         raise RuntimeError("DATABASE_URL missing hostname or database name")
     return url
 
+
 if DATABASE_URL:
     _validate_database_url(DATABASE_URL)
 
 _pool: SimpleConnectionPool | None = None
+
 
 # ----------------------
 # Connection pool
@@ -40,8 +45,10 @@ def get_pool(minconn=1, maxconn=10):
         _pool = SimpleConnectionPool(minconn, maxconn, dsn=DATABASE_URL)
     return _pool
 
+
 def get_conn():
     return get_pool().getconn()
+
 
 def release_conn(conn):
     if conn:
@@ -49,6 +56,7 @@ def release_conn(conn):
             get_pool().putconn(conn)
         except Exception:
             logger.exception("Failed to release connection")
+
 
 # ----------------------
 # Query helper
@@ -84,6 +92,7 @@ def db_query(sql, params=None, fetchone=False, fetchall=False, commit=False):
     finally:
         release_conn(conn)
 
+
 # ----------------------
 # Input sanitization helpers
 # ----------------------
@@ -96,6 +105,7 @@ def safe_str(val: str) -> str:
         val = val[:255]
     return val
 
+
 def safe_json(val) -> dict:
     """Ensure JSON object, fallback to empty dict"""
     if isinstance(val, dict):
@@ -104,6 +114,7 @@ def safe_json(val) -> dict:
         return json.loads(val)
     except Exception:
         return {}
+
 
 # ----------------------
 # Table creation (Google OAuth only)

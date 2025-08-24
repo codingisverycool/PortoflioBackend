@@ -35,18 +35,30 @@ def _cors_options():
     })
     return resp
 
+# ----------------------
+# Helper: fetch UUID from email
+# ----------------------
+def get_user_id_by_email(email: str) -> str | None:
+    if not email:
+        return None
+    row = db_query("SELECT id FROM users WHERE email = %s LIMIT 1", (email,), fetchone=True)
+    return row['id'] if row else None
+
 # --- Transactions ---
 @finance_bp.route('/api/transactions', methods=['GET', 'POST', 'OPTIONS'])
 @google_jwt_required
 def transactions_api():
     user_email = request.user_info.get("email")
-
     if request.method == 'OPTIONS':
         return _cors_options()
 
+    user_id = get_user_id_by_email(user_email)
+    if not user_id:
+        return jsonify({'success': False, 'error': "User not found"}), 404
+
     if request.method == 'GET':
         try:
-            transactions = fetch_transactions_for_user(user_email)
+            transactions = fetch_transactions_for_user(user_id)
             enhanced = []
             for tx in transactions:
                 stock_info = get_stock_info(tx['stock']) or {}
@@ -104,12 +116,12 @@ def transactions_api():
 
         # Insert transaction safely with per-user lock
         try:
-            insert_transaction_locked(user_email, tx_type, stock, quantity, price, date_str, notes)
+            insert_transaction_locked(user_id, tx_type, stock, quantity, price, date_str, notes)
         except ValueError as ve:
             return jsonify({'success': False, 'error': str(ve)}), 400
 
         # Return updated transactions
-        transactions = fetch_transactions_for_user(user_email)
+        transactions = fetch_transactions_for_user(user_id)
         enhanced = []
         for tx in transactions:
             stock_info = get_stock_info(tx['stock']) or {}
@@ -124,14 +136,16 @@ def transactions_api():
 @google_jwt_required
 def portfolio_tracker_api():
     user_email = request.user_info.get("email")
-
     if request.method == 'OPTIONS':
         return _cors_options()
 
-    try:
-        transactions = fetch_transactions_for_user(user_email)
-        holdings = compute_holdings_from_transactions(transactions)
+    user_id = get_user_id_by_email(user_email)
+    if not user_id:
+        return jsonify({'success': False, 'error': "User not found"}), 404
 
+    try:
+        transactions = fetch_transactions_for_user(user_id)
+        holdings = compute_holdings_from_transactions(transactions)
         if not holdings:
             return jsonify({'success': False, 'error': 'No holdings found.'}), 200
 
@@ -177,7 +191,6 @@ def portfolio_tracker_api():
             total_cost += total_cost_stock
             sector_values[stock_info.get('sector', 'Other')] += current_value
 
-        # Allocation percent
         for entry in portfolio_data:
             cv = entry.get('Current Value', 0)
             entry['AllocationPercent'] = (cv / total_value) * 100 if total_value > 0 else 0
@@ -185,7 +198,7 @@ def portfolio_tracker_api():
         df = pd.DataFrame(portfolio_data)
         latest_risk = (db_query(
             "SELECT profile_json FROM user_risk_profiles WHERE user_id = %s ORDER BY created_at DESC LIMIT 1;",
-            (user_email,), fetchone=True
+            (user_id,), fetchone=True
         ) or {}).get('profile_json')
 
         return jsonify({
@@ -212,12 +225,15 @@ def portfolio_tracker_api():
 @google_jwt_required
 def valuation_dashboard_api():
     user_email = request.user_info.get("email")
-
     if request.method == 'OPTIONS':
         return _cors_options()
 
+    user_id = get_user_id_by_email(user_email)
+    if not user_id:
+        return jsonify({'success': False, 'error': "User not found"}), 404
+
     try:
-        transactions = fetch_transactions_for_user(user_email)
+        transactions = fetch_transactions_for_user(user_id)
         if not transactions:
             return jsonify({'success': False, 'error': "No transactions found"}), 404
 
@@ -249,7 +265,6 @@ def valuation_dashboard_api():
                 logger.exception("Valuation error for %s: %s", symbol, e)
                 continue
 
-        # Compute allocation & enrich data
         for symbol, data in valuation_data.items():
             try:
                 stock_info = get_stock_info(symbol) or {}
@@ -295,11 +310,15 @@ def valuation_dashboard_api():
 @google_jwt_required
 def clear_transactions_api():
     user_email = request.user_info.get("email")
-
     if request.method == 'OPTIONS':
         return _cors_options()
+
+    user_id = get_user_id_by_email(user_email)
+    if not user_id:
+        return jsonify({'success': False, 'error': "User not found"}), 404
+
     try:
-        db_query("DELETE FROM transactions WHERE user_id = %s", (user_email,), commit=True)
+        db_query("DELETE FROM transactions WHERE user_id = %s", (user_id,), commit=True)
         return jsonify({'success': True, 'message': "All transactions cleared successfully."}), 200
     except Exception as e:
         logger.exception("Clear transactions error for user %s: %s", user_email, e)
