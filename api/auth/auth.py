@@ -16,7 +16,7 @@ if not GOOGLE_CLIENT_ID:
 def google_jwt_required(f):
     """
     Decorator to protect routes with Google JWT.
-    Verifies the token and attaches the user DB record to `request.user`.
+    Verifies the token and attaches the user DB record (with UUID) to `request.user`.
     """
     @wraps(f)
     def decorated_function(*args, **kwargs):
@@ -44,15 +44,17 @@ def google_jwt_required(f):
 
             # Fetch the user from the database using email
             user_record = db_query(
-                "SELECT id, email, role, verified FROM users WHERE email = %s",
-                (email,)
+                "SELECT id, email, role, name, meta, created_at, updated_at FROM users WHERE email = %s",
+                (email,),
+                fetchone=True
             )
+
             if not user_record:
                 return jsonify({"message": "User not found"}), 401
 
             # Attach user info to request for downstream routes
-            request.user = user_record[0]
-            request.user_info = id_info  # keep original Google payload if needed
+            request.user = user_record  # user_record contains UUID under "id"
+            request.user_info = id_info  # raw Google payload
 
         except ValueError as e:
             print(f"Token verification failed: {e}")
@@ -64,3 +66,11 @@ def google_jwt_required(f):
         return f(*args, **kwargs)
 
     return decorated_function
+
+
+# Optional helper to get current user UUID safely
+def get_current_user_id():
+    """
+    Returns the UUID of the currently authenticated user.
+    """
+    return getattr(request, "user", {}).get("id")
