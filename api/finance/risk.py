@@ -4,13 +4,12 @@ import logging
 from datetime import datetime
 from flask import Blueprint, request, jsonify, make_response
 
-from api.auth.auth import token_required
 from api.database.db import db_query, safe_str
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 
-risk_bp = Blueprint('finance_risk_bp', __name__)
+risk_bp = Blueprint("finance_risk_bp", __name__)
 
 # ----------------------
 # RISK QUESTIONNAIRE
@@ -56,40 +55,36 @@ def _score_for_question(q_obj, raw_val):
             return int(meta.get("score", 0))
     return 0
 
-
 # ----------------------
 # Routes
 # ----------------------
-@risk_bp.route('/api/risk/questionnaire', methods=['GET'])
-@token_required
-def get_risk_questionnaire(user_id):
+@risk_bp.route("/api/risk/questionnaire", methods=["GET"])
+def get_risk_questionnaire():
     return jsonify({"success": True, "questionnaire": RISK_QUESTIONNAIRE})
 
-
-@risk_bp.route('/api/risk/submit', methods=['POST', 'OPTIONS'])
-@token_required
-def submit_risk(user_id):
-    if request.method == 'OPTIONS':
+@risk_bp.route("/api/risk/submit", methods=["POST", "OPTIONS"])
+def submit_risk():
+    if request.method == "OPTIONS":
         resp = make_response()
-        origin = request.headers.get('Origin', '*')
+        origin = request.headers.get("Origin", "*")
         resp.headers.update({
-            'Access-Control-Allow-Origin': origin,
-            'Access-Control-Allow-Methods': "POST, OPTIONS",
-            'Access-Control-Allow-Headers': "Content-Type, Authorization",
-            'Access-Control-Allow-Credentials': "true"
+            "Access-Control-Allow-Origin": origin,
+            "Access-Control-Allow-Methods": "POST, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization",
+            "Access-Control-Allow-Credentials": "true"
         })
         return resp
 
     try:
-        data = request.get_json() or request.form or {}
+        data = request.get_json() or {}
         if not isinstance(data, dict):
             return jsonify({"success": False, "error": "Invalid payload"}), 400
 
-        # Compute total score defensively
-        total_score = 0
-        for q in RISK_QUESTIONNAIRE["questions"]:
-            qid = q.get("id")
-            total_score += _score_for_question(q, data.get(qid))
+        # Compute total score
+        total_score = sum(
+            _score_for_question(q, data.get(q.get("id")))
+            for q in RISK_QUESTIONNAIRE["questions"]
+        )
 
         # Determine risk bracket
         risk_bracket = "Undetermined"
@@ -105,25 +100,36 @@ def submit_risk(user_id):
             "advisor_name": safe_str(data.get("advisorName")),
             "advisor_designation": safe_str(data.get("advisorDesignation")),
             "assessment_date": safe_str(data.get("assessmentDate")),
-            "assessment_place": safe_str(data.get("assessmentPlace"))
+            "assessment_place": safe_str(data.get("assessmentPlace")),
         }
 
         profile_data = {
-            "user_id": user_id,
             "submitted_at": datetime.utcnow().isoformat(),
             "client_details": client_details,
             "signature": safe_str(data.get("applicantSignature")),
             "total_score": total_score,
             "risk_bracket": risk_bracket,
-            "interested_investments": data.get("interestedInvestments") if isinstance(data.get("interestedInvestments"), list) else [],
-            "answers": data.get("answers") if isinstance(data.get("answers"), dict) else {}
+            "interested_investments": (
+                data.get("interestedInvestments")
+                if isinstance(data.get("interestedInvestments"), list)
+                else []
+            ),
+            "answers": (
+                data.get("answers")
+                if isinstance(data.get("answers"), dict)
+                else {}
+            ),
         }
 
-        # Insert safely
-        db_query("""
-            INSERT INTO user_risk_profiles (user_id, profile_json, total_score, risk_bracket, created_at)
-            VALUES (%s, %s::jsonb, %s, %s, NOW());
-        """, (user_id, json.dumps(profile_data), total_score, risk_bracket), commit=True)
+        # Insert into DB (no user_id since auth handled in frontend for now)
+        db_query(
+            """
+            INSERT INTO user_risk_profiles (profile_json, total_score, risk_bracket, created_at)
+            VALUES (%s::jsonb, %s, %s, NOW());
+            """,
+            (json.dumps(profile_data), total_score, risk_bracket),
+            commit=True,
+        )
 
         return jsonify({"success": True, "total_score": total_score, "risk_bracket": risk_bracket})
 
@@ -131,22 +137,22 @@ def submit_risk(user_id):
         logger.exception("Risk submission error: %s", e)
         return jsonify({"success": False, "error": "Failed to process risk assessment"}), 500
 
-
-@risk_bp.route('/api/risk/check', methods=['GET'])
-@token_required
-def check_risk_assessment(user_id):
+@risk_bp.route("/api/risk/check", methods=["GET"])
+def check_risk_assessment():
     try:
-        row = db_query("""
+        row = db_query(
+            """
             SELECT profile_json
             FROM user_risk_profiles
-            WHERE user_id = %s
             ORDER BY created_at DESC
             LIMIT 1;
-        """, (user_id,), fetchone=True)
+            """,
+            fetchone=True,
+        )
         if row:
-            return jsonify({"success": True, "completed": True, "latest_assessment": row['profile_json']})
+            return jsonify({"success": True, "completed": True, "latest_assessment": row["profile_json"]})
         else:
             return jsonify({"success": True, "completed": False})
     except Exception as e:
         logger.exception("Check risk assessment error: %s", e)
-        return jsonify({'success': False, 'error': 'Failed to fetch assessment'}), 500
+        return jsonify({"success": False, "error": "Failed to fetch assessment"}), 500

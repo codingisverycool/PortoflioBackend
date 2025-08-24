@@ -1,171 +1,44 @@
+# api/auth/auth.py
+
 import os
-import logging
-import datetime
-import jwt
 from functools import wraps
-from flask import request, jsonify, g
-from flask_login import login_user, logout_user
-from werkzeug.security import generate_password_hash, check_password_hash
-import uuid
-from api.database.db import db_query
+from flask import request, jsonify
+from google.oauth2 import id_token
+from google.auth.transport import requests as google_requests
 
-# --- Logging setup ---
-logger = logging.getLogger(__name__)
-if not logger.handlers:
-    handler = logging.StreamHandler()
-    formatter = logging.Formatter(
-        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-    )
-    handler.setFormatter(formatter)
-    logger.addHandler(handler)
-    logger.setLevel(logging.DEBUG)
-
-# --- JWT Settings ---
-JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "dev_secret_key")
-JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
-JWT_EXPIRE_DAYS = int(os.getenv("JWT_EXPIRE_DAYS", "7"))
-JWT_ISS = os.getenv("BACKEND_JWT_ISS", "your-app-name")
-JWT_AUD = os.getenv("BACKEND_JWT_AUD", "your-app-client")
+# --- Google Client ID ---
+GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID")
+if not GOOGLE_CLIENT_ID:
+    raise ValueError("GOOGLE_CLIENT_ID environment variable not set")
 
 
-def get_user_by_email(email):
-    """Fetch user by email from DB"""
-    logger.debug("Fetching user by email: %s", email)
-    sql = "SELECT id, email, password FROM users WHERE email = %s"
-    result = db_query(sql, (email,), fetchone=True)
-    logger.debug("DB result for email %s: %s", email, result)
-    return result
-
-
-def generate_jwt(user_id):
-    """Generate JWT token for user"""
-    now = datetime.datetime.utcnow()
-    exp = now + datetime.timedelta(days=JWT_EXPIRE_DAYS)
-    payload = {
-        "user_id": str(user_id),
-        "iss": JWT_ISS,
-        "aud": JWT_AUD,
-        "iat": now,
-        "exp": exp,
-    }
-    try:
-        token = jwt.encode(payload, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
-        logger.debug("Generated JWT for user %s: %s", user_id, token)
-        return token
-    except Exception as e:
-        logger.error("Error generating JWT: %s", str(e), exc_info=True)
-        return None
-
-def decode_jwt(token: str):
-    """Decode JWT token and convert user_id to UUID"""
-    try:
-        logger.debug("Attempting to decode JWT: %s", token)
-        decoded = jwt.decode(
-            token,
-            JWT_SECRET_KEY,
-            algorithms=[JWT_ALGORITHM],
-            audience=JWT_AUD,
-            issuer=JWT_ISS
-        )
-
-        # Convert user_id to UUID if possible
-        try:
-            decoded['user_id'] = uuid.UUID(decoded['user_id'])
-        except (ValueError, TypeError):
-            logger.error("Invalid user_id in JWT: %s", decoded.get('user_id'))
-            return None
-
-        logger.debug("Decoded JWT payload: %s", decoded)
-        return decoded
-
-    except jwt.ExpiredSignatureError:
-        logger.warning("JWT expired")
-    except jwt.InvalidTokenError as e:
-        logger.warning("Invalid JWT: %s", str(e))
-    except Exception as e:
-        logger.error("Unexpected error decoding JWT: %s", str(e), exc_info=True)
-    return None
-
-def token_required(f):
-    """Decorator to protect routes and inject user into flask.g"""
+# --- Decorator for verifying Google ID tokens ---
+def google_jwt_required(f):
     @wraps(f)
-    def decorated(*args, **kwargs):
-        auth_header = request.headers.get("Authorization", None)
-        logger.debug("Authorization header: %s", auth_header)
-
+    def decorated_function(*args, **kwargs):
+        auth_header = request.headers.get("Authorization")
         if not auth_header or not auth_header.startswith("Bearer "):
-            logger.warning("Missing or invalid Authorization header")
-            return jsonify({"message": "Missing or invalid token"}), 401
+            return jsonify({"message": "Authorization header missing or invalid"}), 401
 
         token = auth_header.split(" ")[1]
-        decoded = decode_jwt(token)
-        if not decoded:
-            logger.warning("Token decode failed, rejecting request")
-            return jsonify({"message": "Invalid or expired token"}), 401
+        try:
+            # Verify the token using Google's library
+            id_info = id_token.verify_oauth2_token(
+                token,
+                google_requests.Request(),
+                GOOGLE_CLIENT_ID
+            )
 
-        # ✅ Inject user into flask.g for any route
-        g.current_user = decoded
-        logger.debug("JWT successfully validated for user %s", decoded['user_id'])
+            # Extra safety check for issuer
+            if id_info["iss"] not in ["accounts.google.com", "https://accounts.google.com"]:
+                raise ValueError("Wrong issuer.")
+
+            # Attach user info to the request object for downstream use
+            request.user_info = id_info
+
+        except ValueError as e:
+            print(f"Token verification failed: {e}")
+            return jsonify({"message": "Invalid token"}), 401
 
         return f(*args, **kwargs)
-
-    return decorated
-
-
-# Example login endpoint (kept intact)
-def login(email, password):
-    logger.debug("Login attempt for email: %s", email)
-    user = db_query("SELECT id, email, password FROM users WHERE email = %s", (email,), fetchone=True)
-
-    if not user:
-        logger.warning("User not found for email: %s", email)
-        return None
-
-    if not check_password_hash(user["password"], password):
-        logger.warning("Password check failed for email: %s", email)
-        return None
-
-    login_user(user)
-    token = generate_jwt(user["id"])
-    logger.info("User %s logged in successfully", user["id"])
-    return token
-
-
-def logout():
-    logger.info("Logging out current user")
-    logout_user()
-
-def verify_jwt_token(token: str):
-    try:
-        decoded = jwt.decode(
-            token,
-            JWT_SECRET_KEY,
-            algorithms=[JWT_ALGORITHM],
-            issuer=JWT_ISS,
-            audience=JWT_AUD
-        )
-        logger.info("✅ JWT decoded successfully: %s", decoded)
-        return decoded
-    except jwt.ExpiredSignatureError:
-        logger.warning("❌ Invalid JWT: Token has expired")
-    except jwt.InvalidIssuerError:
-        logger.warning("❌ Invalid JWT: Wrong issuer (expected %s)", JWT_ISS)
-    except jwt.InvalidAudienceError:
-        logger.warning("❌ Invalid JWT: Wrong audience (expected %s)", JWT_AUD)
-    except jwt.InvalidSignatureError:
-        logger.warning("❌ Invalid JWT: Signature verification failed")
-    except Exception as e:
-        logger.warning("❌ Invalid JWT: %s", str(e))
-    return None
-
-
-
-def cors_response(data, status=200):
-    """Return JSON response with CORS headers attached."""
-    from flask import jsonify
-    response = jsonify(data)
-    response.status_code = status
-    response.headers.add("Access-Control-Allow-Origin", "*")
-    response.headers.add("Access-Control-Allow-Headers", "Content-Type,Authorization")
-    response.headers.add("Access-Control-Allow-Methods", "GET,POST,OPTIONS,PUT,DELETE")
-    return response
+    return decorated_function

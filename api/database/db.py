@@ -106,7 +106,7 @@ def safe_json(val) -> dict:
         return {}
 
 # ----------------------
-# Table creation
+# Table creation (Google OAuth only)
 # ----------------------
 def ensure_tables():
     if not DATABASE_URL:
@@ -119,8 +119,7 @@ def ensure_tables():
     CREATE TABLE IF NOT EXISTS users (
         id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
         email VARCHAR(255) UNIQUE NOT NULL,
-        encrypted_pass TEXT,
-        verified BOOLEAN DEFAULT FALSE,
+        name VARCHAR(255),
         role VARCHAR(50) DEFAULT 'client',
         meta JSONB DEFAULT '{}'::jsonb,
         created_at TIMESTAMPTZ DEFAULT NOW(),

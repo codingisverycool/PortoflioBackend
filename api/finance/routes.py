@@ -2,14 +2,19 @@
 import json
 import logging
 from datetime import datetime
-from flask import Blueprint, request, jsonify, make_response, g
+from flask import Blueprint, request, jsonify, make_response
 from collections import defaultdict
 import pandas as pd
 
-from api.auth.auth import token_required, get_user_by_email
+from api.auth.auth import google_jwt_required
 from api.database.db import db_query, safe_str
 from api.finance.models import fetch_transactions_for_user, insert_transaction_locked
-from api.finance.utils import get_stock_info, calculate_realized_and_initial_investment, compute_holdings_from_transactions, calculate_portfolio_irr
+from api.finance.utils import (
+    get_stock_info,
+    calculate_realized_and_initial_investment,
+    compute_holdings_from_transactions,
+    calculate_portfolio_irr
+)
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
@@ -32,15 +37,16 @@ def _cors_options():
 
 # --- Transactions ---
 @finance_bp.route('/api/transactions', methods=['GET', 'POST', 'OPTIONS'])
-@token_required
+@google_jwt_required
 def transactions_api():
-    user_id = g.current_user.get("user_id")
+    user_email = request.user_info.get("email")
+
     if request.method == 'OPTIONS':
         return _cors_options()
 
     if request.method == 'GET':
         try:
-            transactions = fetch_transactions_for_user(user_id)
+            transactions = fetch_transactions_for_user(user_email)
             enhanced = []
             for tx in transactions:
                 stock_info = get_stock_info(tx['stock']) or {}
@@ -68,10 +74,10 @@ def transactions_api():
                 'stockPerformance': stock_performance,
                 'realizedGainsTotal': realized_gains_total,
                 'portfolioIRR': portfolio_irr,
-                'current_user': {'id': str(user_id), 'is_authenticated': True}
+                'current_user': {'email': user_email, 'is_authenticated': True}
             })
         except Exception as e:
-            logger.exception("Error fetching transactions for user %s: %s", user_id, e)
+            logger.exception("Error fetching transactions for user %s: %s", user_email, e)
             return jsonify({'success': False, 'error': 'Failed to load transactions'}), 500
 
     # POST
@@ -98,34 +104,32 @@ def transactions_api():
 
         # Insert transaction safely with per-user lock
         try:
-            insert_transaction_locked(user_id, tx_type, stock, quantity, price, date_str, notes)
+            insert_transaction_locked(user_email, tx_type, stock, quantity, price, date_str, notes)
         except ValueError as ve:
             return jsonify({'success': False, 'error': str(ve)}), 400
 
         # Return updated transactions
-        transactions = fetch_transactions_for_user(user_id)
+        transactions = fetch_transactions_for_user(user_email)
         enhanced = []
         for tx in transactions:
             stock_info = get_stock_info(tx['stock']) or {}
             enhanced.append({**tx, 'name': stock_info.get('shortName', tx['stock']), 'value': tx['quantity'] * tx['price']})
         return jsonify({'success': True, 'transactions': enhanced}), 201
     except Exception as e:
-        logger.exception("Invalid transaction input for user %s: %s", user_id, e)
+        logger.exception("Invalid transaction input for user %s: %s", user_email, e)
         return jsonify({'success': False, 'error': "Invalid input"}), 400
 
 # --- Portfolio ---
 @finance_bp.route('/api/portfolio', methods=['GET', 'OPTIONS'])
-@token_required
+@google_jwt_required
 def portfolio_tracker_api():
-    user_id = g.current_user.get("user_id")
+    user_email = request.user_info.get("email")
+
     if request.method == 'OPTIONS':
         return _cors_options()
 
     try:
-        user_row = get_user_by_email(user_id)
-        user_email = user_row.get('email') if user_row else None
-
-        transactions = fetch_transactions_for_user(user_id)
+        transactions = fetch_transactions_for_user(user_email)
         holdings = compute_holdings_from_transactions(transactions)
 
         if not holdings:
@@ -181,7 +185,7 @@ def portfolio_tracker_api():
         df = pd.DataFrame(portfolio_data)
         latest_risk = (db_query(
             "SELECT profile_json FROM user_risk_profiles WHERE user_id = %s ORDER BY created_at DESC LIMIT 1;",
-            (user_id,), fetchone=True
+            (user_email,), fetchone=True
         ) or {}).get('profile_json')
 
         return jsonify({
@@ -197,22 +201,23 @@ def portfolio_tracker_api():
                 'dow': {'price': 0, 'change': 0, 'change_pct': 0}
             },
             'latestRiskAssessment': latest_risk,
-            'current_user': {'id': str(user_id), 'email': user_email, 'is_authenticated': True}
+            'current_user': {'email': user_email, 'is_authenticated': True}
         })
     except Exception as e:
-        logger.exception("Portfolio tracker error for user %s: %s", user_id, e)
+        logger.exception("Portfolio tracker error for user %s: %s", user_email, e)
         return jsonify({'success': False, 'error': 'Failed to load portfolio'}), 500
 
 # --- Valuation ---
 @finance_bp.route('/api/valuation', methods=['GET', 'OPTIONS'])
-@token_required
+@google_jwt_required
 def valuation_dashboard_api():
-    user_id = g.current_user.get("user_id")
+    user_email = request.user_info.get("email")
+
     if request.method == 'OPTIONS':
         return _cors_options()
 
     try:
-        transactions = fetch_transactions_for_user(user_id)
+        transactions = fetch_transactions_for_user(user_email)
         if not transactions:
             return jsonify({'success': False, 'error': "No transactions found"}), 404
 
@@ -279,22 +284,23 @@ def valuation_dashboard_api():
             'valuationData': valuation_data,
             'tickers': list(valuation_data.keys()),
             'totalValue': total_value,
-            'current_user': {'id': str(user_id), 'is_authenticated': True}
+            'current_user': {'email': user_email, 'is_authenticated': True}
         })
     except Exception as e:
-        logger.exception("Valuation dashboard error for user %s: %s", user_id, e)
+        logger.exception("Valuation dashboard error for user %s: %s", user_email, e)
         return jsonify({'success': False, 'error': "Error loading valuation data"}), 500
 
 # --- Clear transactions ---
 @finance_bp.route('/api/clear_transactions', methods=['POST', 'OPTIONS'])
-@token_required
+@google_jwt_required
 def clear_transactions_api():
-    user_id = g.current_user.get("user_id")
+    user_email = request.user_info.get("email")
+
     if request.method == 'OPTIONS':
         return _cors_options()
     try:
-        db_query("DELETE FROM transactions WHERE user_id = %s", (user_id,), commit=True)
+        db_query("DELETE FROM transactions WHERE user_id = %s", (user_email,), commit=True)
         return jsonify({'success': True, 'message': "All transactions cleared successfully."}), 200
     except Exception as e:
-        logger.exception("Clear transactions error for user %s: %s", user_id, e)
+        logger.exception("Clear transactions error for user %s: %s", user_email, e)
         return jsonify({'success': False, 'error': "Error clearing transactions"}), 500
