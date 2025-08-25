@@ -5,6 +5,7 @@ from datetime import datetime
 from flask import Blueprint, request, jsonify, make_response
 
 from api.database.db import db_query, safe_str
+from api.auth.auth import google_jwt_required
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
@@ -24,7 +25,6 @@ RISK_QUESTIONNAIRE = {
         {"id": "marketDownturnReaction", "options": {"a": {"score": 50}, "b": {"score": 40}, "c": {"score": 30}, "d": {"score": 20}, "e": {"score": 10}}},
         {"id": "incomeStability", "options": {"a": {"score": 50}, "b": {"score": 40}, "c": {"score": 30}, "d": {"score": 20}, "e": {"score": 10}}},
         {"id": "emergencySavings", "options": {"a": {"score": 50}, "b": {"score": 40}, "c": {"score": 30}, "d": {"score": 20}, "e": {"score": 10}}},
-        # Investment Experience
         {"id": "equityExperience", "options": {"Extensive": {"score": 50}, "Moderate": {"score": 30}, "Limited": {"score": 10}, "None": {"score": 0}}},
         {"id": "fixedincomeExperience", "options": {"Extensive": {"score": 50}, "Moderate": {"score": 30}, "Limited": {"score": 10}, "None": {"score": 0}}},
         {"id": "propertyExperience", "options": {"Extensive": {"score": 50}, "Moderate": {"score": 30}, "Limited": {"score": 10}, "None": {"score": 0}}},
@@ -63,6 +63,7 @@ def get_risk_questionnaire():
     return jsonify({"success": True, "questionnaire": RISK_QUESTIONNAIRE})
 
 @risk_bp.route("/api/risk/submit", methods=["POST", "OPTIONS"])
+@google_jwt_required
 def submit_risk():
     if request.method == "OPTIONS":
         resp = make_response()
@@ -80,7 +81,8 @@ def submit_risk():
         if not isinstance(data, dict):
             return jsonify({"success": False, "error": "Invalid payload"}), 400
 
-        user_id = data.get("user_id")  # Required for UUID linkage
+        user = request.user
+        user_id = user.get("id")
         if not user_id:
             return jsonify({"success": False, "error": "user_id missing"}), 400
 
@@ -125,8 +127,10 @@ def submit_risk():
         return jsonify({"success": False, "error": "Failed to process risk assessment"}), 500
 
 @risk_bp.route("/api/risk/check", methods=["GET"])
+@google_jwt_required
 def check_risk_assessment():
-    user_id = request.args.get("user_id")
+    user = request.user
+    user_id = user.get("id")
     if not user_id:
         return jsonify({"success": False, "error": "user_id missing"}), 400
 
