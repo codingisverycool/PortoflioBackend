@@ -5,6 +5,7 @@ from datetime import datetime
 from flask import Blueprint, request, jsonify, make_response
 from collections import defaultdict
 import pandas as pd
+import yfinance as yf
 
 from api.auth.auth import google_jwt_required
 from api.database.db import db_query, safe_str
@@ -136,8 +137,8 @@ def portfolio_tracker_api():
 
     try:
         transactions = fetch_transactions_for_user(user_id)
-        logger.info("Transactions fetched: %s", transactions)
         holdings = compute_holdings_from_transactions(transactions)
+
         if not holdings:
             return jsonify({'success': False, 'error': 'No holdings found.'}), 200
 
@@ -187,6 +188,24 @@ def portfolio_tracker_api():
             cv = entry.get('Current Value', 0)
             entry['AllocationPercent'] = (cv / total_value) * 100 if total_value > 0 else 0
 
+        # Fetch real market index data from Yahoo Finance
+        indices = {
+            'nasdaq': '^IXIC',
+            'sp500': '^GSPC',
+            'dow': '^DJI'
+        }
+        market_data = {}
+        for key, symbol in indices.items():
+            idx = yf.Ticker(symbol).history(period='2d')
+            if idx.empty or len(idx) < 2:
+                market_data[key] = {'price': 0, 'change': 0, 'change_pct': 0}
+                continue
+            last_price = idx['Close'].iloc[-1]
+            prev_price = idx['Close'].iloc[-2]
+            change = last_price - prev_price
+            change_pct = (change / prev_price) if prev_price != 0 else 0
+            market_data[key] = {'price': last_price, 'change': change, 'change_pct': change_pct}
+
         df = pd.DataFrame(portfolio_data)
         latest_risk = (db_query(
             "SELECT profile_json FROM user_risk_profiles WHERE user_id = %s ORDER BY created_at DESC LIMIT 1;",
@@ -200,17 +219,14 @@ def portfolio_tracker_api():
             'totalGain': total_value - total_cost,
             'totalGainPercent': ((total_value - total_cost) / total_cost * 100) if total_cost else 0,
             'portfolioTableData': df.to_dict(orient='records'),
-            'marketData': {
-                'nasdaq': {'price': 0, 'change': 0, 'change_pct': 0},
-                'sp500': {'price': 0, 'change': 0, 'change_pct': 0},
-                'dow': {'price': 0, 'change': 0, 'change_pct': 0}
-            },
+            'marketData': market_data,
             'latestRiskAssessment': latest_risk,
             'current_user': {'email': user_email, 'is_authenticated': True}
         })
+
     except Exception as e:
         logger.exception("Portfolio tracker error for user %s: %s", user_email, e)
-        return jsonify({'success': False, 'error': 'Failed to load portfolio'}), 500
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 # ---------------------- Valuation ----------------------
 @finance_bp.route('/api/valuation', methods=['GET', 'OPTIONS'])
