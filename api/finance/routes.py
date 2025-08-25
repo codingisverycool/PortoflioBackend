@@ -136,6 +136,7 @@ def portfolio_tracker_api():
 
     try:
         transactions = fetch_transactions_for_user(user_id)
+        logger.info("Transactions fetched: %s", transactions)
         holdings = compute_holdings_from_transactions(transactions)
         if not holdings:
             return jsonify({'success': False, 'error': 'No holdings found.'}), 200
