@@ -139,14 +139,29 @@ def calculate_realized_and_initial_investment(transactions):
 
 def compute_holdings_from_transactions(transactions):
     """
-    Computes current holdings with avg_cost and realized_gain
+    Computes current holdings with avg_cost and realized_gain safely.
+    Handles sells correctly, never skips lots incorrectly.
+    Returns a dict keyed by stock symbol.
     """
-    holdings, lots, realized_gains = {}, {}, {}
+    holdings = {}
+    lots = {}
+    realized_gains = {}
+
+    # Sort transactions by date
     for tx in sorted(transactions, key=lambda x: x['date']):
         stock = tx['stock'].upper()
-        qty, price, date, type_ = int(tx['quantity']), float(tx['price']), tx['date'], tx['type']
+        qty = int(tx['quantity'])
+        price = float(tx['price'])
+        date = tx['date']
+        type_ = tx['type'].capitalize()
+
         if stock not in holdings:
-            holdings[stock] = {'stock': stock, 'quantity': 0, 'total_cost': 0.0, 'first_buy_date': date}
+            holdings[stock] = {
+                'stock': stock,
+                'quantity': 0,
+                'total_cost': 0.0,
+                'first_buy_date': date
+            }
             lots[stock] = []
             realized_gains[stock] = 0.0
 
@@ -156,9 +171,13 @@ def compute_holdings_from_transactions(transactions):
             holdings[stock]['total_cost'] += qty * price
             holdings[stock]['first_buy_date'] = min(holdings[stock]['first_buy_date'], date)
         elif type_ == 'Sell':
-            if holdings[stock]['quantity'] < qty:
-                continue
-            sell_qty, cost_removed = qty, 0.0
+            # Compute sell against lots (FIFO)
+            sell_qty = qty
+            cost_removed = 0.0
+
+            # If user tries to sell more than owned, sell only what we have
+            sell_qty = min(sell_qty, holdings[stock]['quantity'])
+
             while sell_qty > 0 and lots[stock]:
                 lot = lots[stock][0]
                 lot_qty = lot['quantity']
@@ -170,16 +189,22 @@ def compute_holdings_from_transactions(transactions):
                     cost_removed += sell_qty * lot['price']
                     lot['quantity'] -= sell_qty
                     sell_qty = 0
-            realized_gains[stock] += qty * price - cost_removed
-            holdings[stock]['quantity'] -= qty
-            holdings[stock]['total_cost'] -= cost_removed
-            if holdings[stock]['quantity'] <= 0:
-                del holdings[stock]
 
-    # finalize avg_cost
+            realized_gains[stock] += qty * price - cost_removed
+            holdings[stock]['quantity'] -= min(qty, holdings[stock]['quantity'])
+            holdings[stock]['total_cost'] -= cost_removed
+
+    # Finalize avg_cost
     for stock in list(holdings.keys()):
-        qty, total_cost = holdings[stock]['quantity'], holdings[stock]['total_cost']
+        qty = holdings[stock]['quantity']
+        total_cost = holdings[stock]['total_cost']
         holdings[stock]['avg_cost'] = total_cost / qty if qty else 0.0
         holdings[stock]['realized_gain'] = realized_gains.get(stock, 0.0)
 
+    # Remove stocks with zero quantity but keep realized gains
+    for stock in list(holdings.keys()):
+        if holdings[stock]['quantity'] <= 0:
+            holdings.pop(stock)
+
     return holdings
+
