@@ -6,6 +6,8 @@ from flask import Blueprint, request, jsonify, make_response
 from collections import defaultdict
 import pandas as pd
 import yfinance as yf
+from api.finance.transactions.csv_upload import validate_and_normalize_transaction, parse_csv_string
+from decimal import Decimal
 
 from api.auth.auth import google_jwt_required
 from api.database.db import db_query, safe_str
@@ -33,6 +35,115 @@ def _cors_options():
         'Access-Control-Allow-Credentials': "true"
     })
     return resp
+
+# ---------------------- Helper: handle CSV Transaction Upload ----------------------
+
+@finance_bp.route('/api/transactions/bulk', methods=['POST', 'OPTIONS'])
+@google_jwt_required
+def transactions_bulk_api():
+    """
+    Accepts JSON: { "transactions": [ {date, stock, type, quantity, price, notes?, source?}, ... ] }
+    Validates rows server-side and inserts valid ones using insert_transaction_locked.
+    Returns per-row errors and the updated transactions list.
+    """
+    if request.method == 'OPTIONS':
+        return _cors_options()
+
+    user = request.user
+    user_id = user.get("id")
+    user_email = user.get("email")
+    if not user_id:
+        return jsonify({'success': False, 'error': "user_id missing"}), 400
+
+    try:
+        payload = None
+        # Support JSON body with "transactions"
+        if request.is_json:
+            payload = request.get_json()
+        else:
+            # fallback: try form (or multipart with a CSV string field named 'csv')
+            payload = request.form.to_dict() or {}
+            # If a raw CSV string is present under 'csv', parse it
+            if 'csv' in payload and payload['csv'].strip():
+                csv_rows = parse_csv_string(payload['csv'])
+                payload = {'transactions': csv_rows}
+
+        transactions = payload.get('transactions') if isinstance(payload, dict) else None
+        if transactions is None:
+            return jsonify({'success': False, 'error': "No transactions provided. Expected JSON with key 'transactions'"}), 400
+        if not isinstance(transactions, list):
+            return jsonify({'success': False, 'error': "transactions must be an array"}), 400
+
+        valid_rows = []
+        errors = []
+
+        # Validate all rows first
+        for idx, raw in enumerate(transactions):
+            normalized, row_errors = validate_and_normalize_transaction(raw)
+            if row_errors:
+                errors.append({'index': idx, 'errors': row_errors})
+            else:
+                valid_rows.append((idx, normalized))
+
+        inserted = []
+        insert_errors = []
+
+        # Insert each valid row via insert_transaction_locked (preserves locks/validation)
+        for idx, row in valid_rows:
+            try:
+                # insert_transaction_locked(user_id, tx_type, stock, quantity, price, date_str, notes=None, source=None)
+                # Ensure we convert price to float if DB expect numeric; insert helper should handle it,
+                # but we pass string or Decimal depending on your function contract.
+                price_val = row['price']
+                # convert Decimal to float for legacy helpers if needed
+                if isinstance(price_val, Decimal):
+                    price_val = float(price_val)
+
+                insert_transaction_locked(
+                    user_id,
+                    row['type'],          # 'Buy' or 'Sell' (capitalized)
+                    row['stock'],
+                    int(row['quantity']),
+                    price_val,
+                    row['date'],
+                    row.get('notes') or None
+                    # if your insert_transaction_locked takes source, add it here
+                )
+            except ValueError as ve:
+                # business-level insertion error (e.g., insufficient quantity for sell)
+                insert_errors.append({'index': idx, 'errors': [str(ve)]})
+            except Exception as e:
+                # log and capture generic error
+                logger.exception("Error inserting bulk row for user %s: %s", user_email, e)
+                insert_errors.append({'index': idx, 'errors': ["Server error during insert"]})
+
+        # Merge errors
+        errors.extend(insert_errors)
+
+        # Fetch updated transactions for response
+        try:
+            transactions_db = fetch_transactions_for_user(user_id)
+            enhanced = []
+            for tx in transactions_db:
+                stock_info = get_stock_info(tx['stock']) or {}
+                enhanced.append({
+                    **tx,
+                    'name': stock_info.get('shortName', tx['stock']),
+                    'value': tx['quantity'] * tx['price']
+                })
+        except Exception:
+            enhanced = []
+
+        return jsonify({
+            'success': True,
+            'insertedCount': len(valid_rows) - len(insert_errors),
+            'errors': errors,
+            'transactions': enhanced
+        }), 200
+
+    except Exception as e:
+        logger.exception("Bulk upload error for user %s: %s", user_email, e)
+        return jsonify({'success': False, 'error': 'Failed processing bulk upload'}), 500
 
 # ---------------------- Transactions ----------------------
 @finance_bp.route('/api/transactions', methods=['GET', 'POST', 'OPTIONS'])
