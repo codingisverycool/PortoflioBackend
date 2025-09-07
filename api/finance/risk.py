@@ -42,6 +42,7 @@ RISK_QUESTIONNAIRE = {
     ]
 }
 
+
 # ----------------------
 # Helper: Score computation
 # ----------------------
@@ -52,8 +53,12 @@ def _score_for_question(q_obj, raw_val):
     options = q_obj.get("options", {})
     for key, meta in options.items():
         if safe_str(key).strip().lower() == val_str.lower():
-            return int(meta.get("score", 0))
+            try:
+                return int(meta.get("score", 0))
+            except Exception:
+                return 0
     return 0
+
 
 # ----------------------
 # Routes
@@ -61,6 +66,7 @@ def _score_for_question(q_obj, raw_val):
 @risk_bp.route("/api/risk/questionnaire", methods=["GET"])
 def get_risk_questionnaire():
     return jsonify({"success": True, "questionnaire": RISK_QUESTIONNAIRE})
+
 
 @risk_bp.route("/api/risk/submit", methods=["POST", "OPTIONS"])
 @google_jwt_required
@@ -77,38 +83,46 @@ def submit_risk():
         return resp
 
     try:
-        data = request.get_json() or {}
-        if not isinstance(data, dict):
-            return jsonify({"success": False, "error": "Invalid payload"}), 400
+        # Accept either JSON or form-encoded data
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            # Try request.form (flat) and convert
+            payload = {}
+            for k in request.form:
+                payload[k] = request.form.get(k)
 
+        data = payload or {}
         user = request.user
         user_id = user.get("id")
         if not user_id:
             return jsonify({"success": False, "error": "user_id missing"}), 400
 
-        total_score = sum(_score_for_question(q, data.get(q.get("id"))) for q in RISK_QUESTIONNAIRE["questions"])
+        # Compute score by iterating all defined questions and mapping
+        total_score = 0
+        for q in RISK_QUESTIONNAIRE["questions"]:
+            qid = q.get("id")
+            # Accept answers either at top-level (form) or inside an "answers" object
+            answer_val = None
+            if isinstance(data.get(qid), (str, int)):
+                answer_val = data.get(qid)
+            elif isinstance(data.get("answers"), dict):
+                answer_val = data["answers"].get(qid)
+            # fallback: sometimes front-end uses camel-case vs lower-case keys; safe_str normalizes
+            total_score += _score_for_question(q, answer_val)
 
+        # Determine bracket
         risk_bracket = "Undetermined"
         for bracket in RISK_QUESTIONNAIRE["risk_brackets"]:
             if bracket["min"] <= total_score <= bracket["max"]:
                 risk_bracket = bracket["name"]
                 break
 
-        profile_data = {
+        # Store the whole payload plus metadata so we don't lose any fields (signatures, priorities, etc)
+        profile_record = {
             "submitted_at": datetime.utcnow().isoformat(),
-            "client_details": {
-                "name": safe_str(data.get("applicantName")),
-                "address": safe_str(data.get("applicantAddress")),
-                "advisor_name": safe_str(data.get("advisorName")),
-                "advisor_designation": safe_str(data.get("advisorDesignation")),
-                "assessment_date": safe_str(data.get("assessmentDate")),
-                "assessment_place": safe_str(data.get("assessmentPlace")),
-            },
-            "signature": safe_str(data.get("applicantSignature")),
+            "payload": data,
             "total_score": total_score,
-            "risk_bracket": risk_bracket,
-            "interested_investments": data.get("interestedInvestments") if isinstance(data.get("interestedInvestments"), list) else [],
-            "answers": data.get("answers") if isinstance(data.get("answers"), dict) else {},
+            "risk_bracket": risk_bracket
         }
 
         db_query(
@@ -116,7 +130,7 @@ def submit_risk():
             INSERT INTO user_risk_profiles (user_id, profile_json, total_score, risk_bracket, created_at)
             VALUES (%s, %s::jsonb, %s, %s, NOW())
             """,
-            (user_id, json.dumps(profile_data), total_score, risk_bracket),
+            (user_id, json.dumps(profile_record), total_score, risk_bracket),
             commit=True,
         )
 
@@ -125,6 +139,7 @@ def submit_risk():
     except Exception as e:
         logger.exception("Risk submission error: %s", e)
         return jsonify({"success": False, "error": "Failed to process risk assessment"}), 500
+
 
 @risk_bp.route("/api/risk/check", methods=["GET"])
 @google_jwt_required
@@ -153,3 +168,44 @@ def check_risk_assessment():
     except Exception as e:
         logger.exception("Check risk assessment error: %s", e)
         return jsonify({"success": False, "error": "Failed to fetch assessment"}), 500
+
+
+@risk_bp.route("/api/risk/profile", methods=["GET"])
+@google_jwt_required
+def get_risk_profile():
+    """
+    Compact summary endpoint consumed by Nav (and other UI).
+    Returns the latest profile's total_score, risk_bracket, submitted_at and profile_json.
+    """
+    user = request.user
+    user_id = user.get("id")
+    if not user_id:
+        return jsonify({"success": False, "error": "user_id missing"}), 400
+
+    try:
+        row = db_query(
+            """
+            SELECT total_score, risk_bracket, profile_json, created_at
+            FROM user_risk_profiles
+            WHERE user_id = %s
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (user_id,),
+            fetchone=True,
+        )
+        if not row:
+            return jsonify({"success": True, "exists": False, "profile": None})
+
+        profile_json = row.get("profile_json") or {}
+        # Some callers expect "profile" that contains payload + metadata
+        summary = {
+            "total_score": row.get("total_score"),
+            "risk_bracket": row.get("risk_bracket"),
+            "submitted_at": profile_json.get("submitted_at") if isinstance(profile_json, dict) else None,
+            "profile": profile_json
+        }
+        return jsonify({"success": True, "exists": True, "profile": summary})
+    except Exception as e:
+        logger.exception("Get risk profile error: %s", e)
+        return jsonify({"success": False, "error": "Failed to fetch risk profile"}), 500

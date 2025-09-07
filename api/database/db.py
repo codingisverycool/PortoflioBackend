@@ -164,6 +164,18 @@ def ensure_tables():
     );
 
     CREATE INDEX IF NOT EXISTS idx_transactions_user_stock ON transactions(user_id, stock);
+
+    -- NEW: table to store user risk assessment profiles
+    CREATE TABLE IF NOT EXISTS user_risk_profiles (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        profile_json JSONB DEFAULT '{}'::jsonb,
+        total_score INTEGER,
+        risk_bracket VARCHAR(64),
+        created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_user_risk_profiles_user_id ON user_risk_profiles(user_id);
     """
 
     conn = None
