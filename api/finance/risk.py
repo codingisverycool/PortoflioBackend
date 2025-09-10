@@ -1,4 +1,3 @@
-# api/finance/risk.py
 import json
 import logging
 from datetime import datetime
@@ -86,10 +85,7 @@ def submit_risk():
         # Accept either JSON or form-encoded data
         payload = request.get_json(silent=True)
         if not isinstance(payload, dict):
-            # Try request.form (flat) and convert
-            payload = {}
-            for k in request.form:
-                payload[k] = request.form.get(k)
+            payload = {k: request.form.get(k) for k in request.form}
 
         data = payload or {}
         user = request.user
@@ -97,17 +93,15 @@ def submit_risk():
         if not user_id:
             return jsonify({"success": False, "error": "user_id missing"}), 400
 
-        # Compute score by iterating all defined questions and mapping
+        # Compute score
         total_score = 0
         for q in RISK_QUESTIONNAIRE["questions"]:
             qid = q.get("id")
-            # Accept answers either at top-level (form) or inside an "answers" object
             answer_val = None
             if isinstance(data.get(qid), (str, int)):
                 answer_val = data.get(qid)
             elif isinstance(data.get("answers"), dict):
                 answer_val = data["answers"].get(qid)
-            # fallback: sometimes front-end uses camel-case vs lower-case keys; safe_str normalizes
             total_score += _score_for_question(q, answer_val)
 
         # Determine bracket
@@ -117,7 +111,6 @@ def submit_risk():
                 risk_bracket = bracket["name"]
                 break
 
-        # Store the whole payload plus metadata so we don't lose any fields (signatures, priorities, etc)
         profile_record = {
             "submitted_at": datetime.utcnow().isoformat(),
             "payload": data,
@@ -158,11 +151,16 @@ def check_risk_assessment():
             ORDER BY created_at DESC
             LIMIT 1
             """,
-            (user_id,),
-            fetchone=True,
+            (user_id,), fetchone=True,
         )
         if row:
-            return jsonify({"success": True, "completed": True, "latest_assessment": row["profile_json"]})
+            profile_json = row["profile_json"]
+            if isinstance(profile_json, str):
+                try:
+                    profile_json = json.loads(profile_json)
+                except Exception:
+                    profile_json = {}
+            return jsonify({"success": True, "completed": True, "latest_assessment": profile_json})
         else:
             return jsonify({"success": True, "completed": False})
     except Exception as e:
@@ -175,7 +173,7 @@ def check_risk_assessment():
 def get_risk_profile():
     """
     Compact summary endpoint consumed by Nav (and other UI).
-    Returns the latest profile's total_score, risk_bracket, submitted_at and profile_json.
+    Returns total_score, risk_bracket, submitted_at, profile.
     """
     user = request.user
     user_id = user.get("id")
@@ -191,18 +189,22 @@ def get_risk_profile():
             ORDER BY created_at DESC
             LIMIT 1
             """,
-            (user_id,),
-            fetchone=True,
+            (user_id,), fetchone=True,
         )
         if not row:
             return jsonify({"success": True, "exists": False, "profile": None})
 
-        profile_json = row.get("profile_json") or {}
-        # Some callers expect "profile" that contains payload + metadata
+        profile_json = row.get("profile_json")
+        if isinstance(profile_json, str):
+            try:
+                profile_json = json.loads(profile_json)
+            except Exception:
+                profile_json = {}
+
         summary = {
             "total_score": row.get("total_score"),
             "risk_bracket": row.get("risk_bracket"),
-            "submitted_at": profile_json.get("submitted_at") if isinstance(profile_json, dict) else None,
+            "submitted_at": profile_json.get("submitted_at") if isinstance(profile_json, dict) else row.get("created_at"),
             "profile": profile_json
         }
         return jsonify({"success": True, "exists": True, "profile": summary})

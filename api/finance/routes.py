@@ -1,28 +1,30 @@
 # api/finance/routes.py
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from flask import Blueprint, request, jsonify, make_response
 from collections import defaultdict
 import pandas as pd
 import yfinance as yf
-from api.finance.transactions.csv_upload import validate_and_normalize_transaction, parse_csv_string
 from decimal import Decimal
 
 from api.auth.auth import google_jwt_required
 from api.database.db import db_query, safe_str
+from api.finance.transactions.csv_upload import validate_and_normalize_transaction, parse_csv_string
 from api.finance.models import fetch_transactions_for_user, insert_transaction_locked
 from api.finance.utils import (
     get_stock_info,
     calculate_realized_and_initial_investment,
     compute_holdings_from_transactions,
-    calculate_portfolio_irr
+    calculate_portfolio_xirr,
+    capital_gains_breakdown
 )
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 
 finance_bp = Blueprint('finance_bp', __name__)
+
 
 # ---------------------- Helper: handle OPTIONS ----------------------
 def _cors_options():
@@ -36,16 +38,30 @@ def _cors_options():
     })
     return resp
 
-# ---------------------- Helper: handle CSV Transaction Upload ----------------------
 
+# ---------------------- Helper: enhance transactions list ----------------------
+def _enhance_transactions(transactions):
+    """
+    Attach market name and value to transactions
+    """
+    enhanced = []
+    for tx in transactions:
+        try:
+            stock_info = get_stock_info(tx['stock']) or {}
+            enhanced.append({
+                **tx,
+                'name': stock_info.get('shortName', tx['stock']),
+                'value': tx['quantity'] * tx['price']
+            })
+        except Exception:
+            enhanced.append(tx)
+    return enhanced
+
+
+# ---------------------- Bulk upload ----------------------
 @finance_bp.route('/api/transactions/bulk', methods=['POST', 'OPTIONS'])
 @google_jwt_required
 def transactions_bulk_api():
-    """
-    Accepts JSON: { "transactions": [ {date, stock, type, quantity, price, notes?, source?}, ... ] }
-    Validates rows server-side and inserts valid ones using insert_transaction_locked.
-    Returns per-row errors and the updated transactions list.
-    """
     if request.method == 'OPTIONS':
         return _cors_options()
 
@@ -57,20 +73,17 @@ def transactions_bulk_api():
 
     try:
         payload = None
-        # Support JSON body with "transactions"
         if request.is_json:
             payload = request.get_json()
         else:
-            # fallback: try form (or multipart with a CSV string field named 'csv')
             payload = request.form.to_dict() or {}
-            # If a raw CSV string is present under 'csv', parse it
             if 'csv' in payload and payload['csv'].strip():
                 csv_rows = parse_csv_string(payload['csv'])
                 payload = {'transactions': csv_rows}
 
         transactions = payload.get('transactions') if isinstance(payload, dict) else None
         if transactions is None:
-            return jsonify({'success': False, 'error': "No transactions provided. Expected JSON with key 'transactions'"}), 400
+            return jsonify({'success': False, 'error': "No transactions provided"}), 400
         if not isinstance(transactions, list):
             return jsonify({'success': False, 'error': "transactions must be an array"}), 400
 
@@ -85,52 +98,36 @@ def transactions_bulk_api():
             else:
                 valid_rows.append((idx, normalized))
 
-        inserted = []
         insert_errors = []
 
-        # Insert each valid row via insert_transaction_locked (preserves locks/validation)
+        # Insert each valid row via insert_transaction_locked
         for idx, row in valid_rows:
             try:
-                # insert_transaction_locked(user_id, tx_type, stock, quantity, price, date_str, notes=None, source=None)
-                # Ensure we convert price to float if DB expect numeric; insert helper should handle it,
-                # but we pass string or Decimal depending on your function contract.
                 price_val = row['price']
-                # convert Decimal to float for legacy helpers if needed
                 if isinstance(price_val, Decimal):
                     price_val = float(price_val)
 
                 insert_transaction_locked(
                     user_id,
-                    row['type'],          # 'Buy' or 'Sell' (capitalized)
+                    row['type'],          # 'Buy' or 'Sell'
                     row['stock'],
                     int(row['quantity']),
                     price_val,
                     row['date'],
                     row.get('notes') or None
-                    # if your insert_transaction_locked takes source, add it here
                 )
             except ValueError as ve:
-                # business-level insertion error (e.g., insufficient quantity for sell)
                 insert_errors.append({'index': idx, 'errors': [str(ve)]})
             except Exception as e:
-                # log and capture generic error
                 logger.exception("Error inserting bulk row for user %s: %s", user_email, e)
                 insert_errors.append({'index': idx, 'errors': ["Server error during insert"]})
 
-        # Merge errors
         errors.extend(insert_errors)
 
         # Fetch updated transactions for response
         try:
             transactions_db = fetch_transactions_for_user(user_id)
-            enhanced = []
-            for tx in transactions_db:
-                stock_info = get_stock_info(tx['stock']) or {}
-                enhanced.append({
-                    **tx,
-                    'name': stock_info.get('shortName', tx['stock']),
-                    'value': tx['quantity'] * tx['price']
-                })
+            enhanced = _enhance_transactions(transactions_db)
         except Exception:
             enhanced = []
 
@@ -145,7 +142,8 @@ def transactions_bulk_api():
         logger.exception("Bulk upload error for user %s: %s", user_email, e)
         return jsonify({'success': False, 'error': 'Failed processing bulk upload'}), 500
 
-# ---------------------- Transactions ----------------------
+
+# ---------------------- Transactions (GET/POST) ----------------------
 @finance_bp.route('/api/transactions', methods=['GET', 'POST', 'OPTIONS'])
 @google_jwt_required
 def transactions_api():
@@ -158,43 +156,21 @@ def transactions_api():
     if not user_id:
         return jsonify({'success': False, 'error': "user_id missing"}), 400
 
+    # GET: return transactions only (metrics moved to capital gains)
     if request.method == 'GET':
         try:
             transactions = fetch_transactions_for_user(user_id)
-            enhanced = []
-            for tx in transactions:
-                stock_info = get_stock_info(tx['stock']) or {}
-                enhanced.append({
-                    **tx,
-                    'name': stock_info.get('shortName', tx['stock']),
-                    'value': tx['quantity'] * tx['price']
-                })
-            realized_gains, initial_investment, remaining_cost_basis, remaining_qty = calculate_realized_and_initial_investment(transactions)
-            realized_gains_total = sum(realized_gains.values()) if realized_gains else 0
-            portfolio_irr = calculate_portfolio_irr(transactions)
-            stock_performance = []
-            for stock, gain in (realized_gains or {}).items():
-                stock_info = get_stock_info(stock) or {}
-                denom = initial_investment.get(stock, 1)
-                stock_performance.append({
-                    'ticker': stock,
-                    'name': stock_info.get('shortName', stock),
-                    'realizedGain': gain,
-                    'irr': (gain / denom) * 100 if denom else 0
-                })
+            enhanced = _enhance_transactions(transactions)
             return jsonify({
                 'success': True,
                 'transactions': enhanced,
-                'stockPerformance': stock_performance,
-                'realizedGainsTotal': realized_gains_total,
-                'portfolioIRR': portfolio_irr,
                 'current_user': {'email': user_email, 'is_authenticated': True}
             })
         except Exception as e:
             logger.exception("Error fetching transactions for user %s: %s", user_email, e)
             return jsonify({'success': False, 'error': 'Failed to load transactions'}), 500
 
-    # POST
+    # POST: create a single transaction
     try:
         data = request.get_json() or request.form
         tx_type = safe_str(data.get('type')).title()
@@ -209,29 +185,19 @@ def transactions_api():
         if not stock or quantity <= 0 or price < 0 or not date_str:
             return jsonify({'success': False, 'error': 'Missing or invalid fields'}), 400
 
-        try:
-            date_obj = datetime.strptime(date_str, '%Y-%m-%d').date()
-        except Exception:
-            return jsonify({'success': False, 'error': 'Date must be YYYY-MM-DD'}), 400
+        date_obj = datetime.strptime(date_str, '%Y-%m-%d').date()
         if date_obj > datetime.utcnow().date():
             return jsonify({'success': False, 'error': 'Transaction date cannot be in the future'}), 400
 
-        # Insert transaction safely with per-user lock
-        try:
-            insert_transaction_locked(user_id, tx_type, stock, quantity, price, date_str, notes)
-        except ValueError as ve:
-            return jsonify({'success': False, 'error': str(ve)}), 400
+        insert_transaction_locked(user_id, tx_type, stock, quantity, price, date_str, notes)
 
-        # Return updated transactions
         transactions = fetch_transactions_for_user(user_id)
-        enhanced = []
-        for tx in transactions:
-            stock_info = get_stock_info(tx['stock']) or {}
-            enhanced.append({**tx, 'name': stock_info.get('shortName', tx['stock']), 'value': tx['quantity'] * tx['price']})
+        enhanced = _enhance_transactions(transactions)
         return jsonify({'success': True, 'transactions': enhanced}), 201
     except Exception as e:
         logger.exception("Invalid transaction input for user %s: %s", user_email, e)
         return jsonify({'success': False, 'error': "Invalid input"}), 400
+
 
 # ---------------------- Portfolio ----------------------
 @finance_bp.route('/api/portfolio', methods=['GET', 'OPTIONS'])
@@ -253,14 +219,17 @@ def portfolio_tracker_api():
         if not holdings:
             return jsonify({'success': False, 'error': 'No holdings found.'}), 200
 
-        portfolio_data = []
-        total_value = total_cost = 0.0
-        sector_values = defaultdict(float)
         realized_gains, initial_investment, remaining_cost_basis, remaining_qty = calculate_realized_and_initial_investment(transactions)
+        portfolio_xirr = calculate_portfolio_xirr(transactions)
 
+        # ---------------------- Portfolio Overview Tab ----------------------
+        overview_data = []
+        total_value = 0.0
+        total_cost = 0.0
+        sector_values = defaultdict(float)
         for symbol, h in holdings.items():
             stock_info = get_stock_info(symbol) or {}
-            qty = h['quantity']
+            qty = h.get('quantity', 0)
             avg_cost = h.get('avg_cost', 0.0)
             total_cost_stock = h.get('total_cost', 0.0)
             current_price = float(stock_info.get('price', 0.0) or 0.0)
@@ -270,7 +239,7 @@ def portfolio_tracker_api():
             gain_loss = realized_gain + unrealized_gain
             denom = remaining_cost_basis.get(symbol, total_cost_stock) + realized_gain
             gain_pct = (gain_loss / denom) * 100 if denom else 0
-            name = stock_info.get('shortName') or stock_info.get('longName') or stock_info.get('name') or symbol
+            name = stock_info.get('shortName') or symbol
 
             entry = {
                 'Ticker': symbol,
@@ -282,24 +251,44 @@ def portfolio_tracker_api():
                 'Total Cost': total_cost_stock,
                 'Avg Cost/Share': avg_cost,
                 'CMP': current_price,
-                '52w High': stock_info.get('52w_high', 0),
-                '52w Low': stock_info.get('52w_low', 0),
                 'Current Value': current_value,
                 'Gain/Loss': gain_loss,
                 'Gain/Loss %': gain_pct,
                 'Unrealized Gains': unrealized_gain,
                 'Sector': stock_info.get('sector', 'N/A'),
             }
-            portfolio_data.append(entry)
+            overview_data.append(entry)
             total_value += current_value
             total_cost += total_cost_stock
             sector_values[stock_info.get('sector', 'Other')] += current_value
 
-        for entry in portfolio_data:
+        for entry in overview_data:
             cv = entry.get('Current Value', 0)
             entry['AllocationPercent'] = (cv / total_value) * 100 if total_value > 0 else 0
 
-        # Fetch real market index data from Yahoo Finance
+        # ---------------------- Portfolio Summary Tab ----------------------
+        # Daily P&L calculation: using yesterday close price
+        summary_data = []
+        today = datetime.utcnow().date()
+        yesterday = today - timedelta(days=1)
+        for entry in overview_data:
+            ticker = entry['Ticker']
+            try:
+                hist = yf.Ticker(ticker).history(start=yesterday.strftime('%Y-%m-%d'), end=today.strftime('%Y-%m-%d'))
+                day_change = (hist['Close'].iloc[-1] - hist['Close'].iloc[0]) if len(hist) >= 2 else 0.0
+            except Exception:
+                day_change = 0.0
+            summary_entry = entry.copy()
+            summary_entry['DayChange'] = day_change
+            summary_entry['DayChangePct'] = ((day_change / entry['CMP']) * 100) if entry['CMP'] else 0
+            summary_data.append(summary_entry)
+
+        # Top 5 gainers/losers (daily)
+        sorted_daily = sorted(summary_data, key=lambda x: x['DayChangePct'], reverse=True)
+        top_5_gainers_daily = sorted_daily[:5]
+        top_5_losers_daily = sorted_daily[-5:]
+
+        # Market overview
         indices = {
             'nasdaq': '^IXIC',
             'sp500': '^GSPC',
@@ -307,17 +296,19 @@ def portfolio_tracker_api():
         }
         market_data = {}
         for key, symbol in indices.items():
-            idx = yf.Ticker(symbol).history(period='2d')
-            if idx.empty or len(idx) < 2:
+            try:
+                idx = yf.Ticker(symbol).history(period='2d')
+                if idx.empty or len(idx) < 2:
+                    market_data[key] = {'price': 0, 'change': 0, 'change_pct': 0}
+                    continue
+                last_price = idx['Close'].iloc[-1]
+                prev_price = idx['Close'].iloc[-2]
+                change = last_price - prev_price
+                change_pct = (change / prev_price) if prev_price else 0
+                market_data[key] = {'price': last_price, 'change': change, 'change_pct': change_pct}
+            except Exception:
                 market_data[key] = {'price': 0, 'change': 0, 'change_pct': 0}
-                continue
-            last_price = idx['Close'].iloc[-1]
-            prev_price = idx['Close'].iloc[-2]
-            change = last_price - prev_price
-            change_pct = (change / prev_price) if prev_price != 0 else 0
-            market_data[key] = {'price': last_price, 'change': change, 'change_pct': change_pct}
 
-        df = pd.DataFrame(portfolio_data)
         latest_risk = (db_query(
             "SELECT profile_json FROM user_risk_profiles WHERE user_id = %s ORDER BY created_at DESC LIMIT 1;",
             (user_id,), fetchone=True
@@ -329,15 +320,20 @@ def portfolio_tracker_api():
             'totalCost': total_cost,
             'totalGain': total_value - total_cost,
             'totalGainPercent': ((total_value - total_cost) / total_cost * 100) if total_cost else 0,
-            'portfolioTableData': df.to_dict(orient='records'),
+            'overviewTabData': overview_data,
+            'summaryTabData': summary_data,
+            'top5GainersDaily': top_5_gainers_daily,
+            'top5LosersDaily': top_5_losers_daily,
             'marketData': market_data,
             'latestRiskAssessment': latest_risk,
+            'portfolioXIRR': portfolio_xirr,
             'current_user': {'email': user_email, 'is_authenticated': True}
         })
 
     except Exception as e:
         logger.exception("Portfolio tracker error for user %s: %s", user_email, e)
         return jsonify({'success': False, 'error': str(e)}), 500
+
 
 # ---------------------- Valuation ----------------------
 @finance_bp.route('/api/valuation', methods=['GET', 'OPTIONS'])
@@ -365,54 +361,47 @@ def valuation_dashboard_api():
         valuation_data = {}
 
         for symbol, h in holdings.items():
-            try:
-                stock_info = get_stock_info(symbol) or {}
-                current_price = float(stock_info.get('price', 0.0) or 0.0)
-                qty = h['quantity']
-                current_value = current_price * qty
-                total_value += current_value
+            stock_info = get_stock_info(symbol) or {}
+            current_price = float(stock_info.get('price', 0.0) or 0.0)
+            qty = h.get('quantity', 0)
+            current_value = current_price * qty
+            total_value += current_value
 
-                valuation_data[symbol] = {
-                    'Name': stock_info.get('shortName', symbol),
-                    'Currency': stock_info.get('currency', 'USD'),
-                    'CurrentPrice': current_price,
-                    'Quantity': qty,
-                    'CurrentValue': current_value,
-                    'AvgCost': h.get('avg_cost', 0.0),
-                    'UnrealizedGain': current_value - (h.get('avg_cost', 0.0) * qty)
-                }
-            except Exception as e:
-                logger.exception("Valuation error for %s: %s", symbol, e)
-                continue
+            valuation_data[symbol] = {
+                'Name': stock_info.get('shortName', symbol),
+                'Currency': stock_info.get('currency', 'USD'),
+                'CurrentPrice': current_price,
+                'Quantity': qty,
+                'CurrentValue': current_value,
+                'AvgCost': h.get('avg_cost', 0.0),
+                'UnrealizedGain': current_value - (h.get('avg_cost', 0.0) * qty)
+            }
 
         for symbol, data in valuation_data.items():
-            try:
-                stock_info = get_stock_info(symbol) or {}
-                allocation_pct = (data['CurrentValue'] / total_value * 100) if total_value > 0 else 0
-                data.update({
-                    'AllocationPercent': allocation_pct,
-                    '52wHigh': stock_info.get('52w_high', data['CurrentPrice']),
-                    '52wLow': stock_info.get('52w_low', data['CurrentPrice']),
-                    'MarketCap': stock_info.get('marketCap', 'N/A'),
-                    'TrailingPE': stock_info.get('trailingPE', 'N/A'),
-                    'ForwardPE': stock_info.get('forwardPE', 'N/A'),
-                    'PEGRatio': stock_info.get('pegRatio', 'N/A'),
-                    'PriceToSales': stock_info.get('priceToSalesTrailing12Months', 'N/A'),
-                    'PriceToBook': stock_info.get('priceToBook', 'N/A'),
-                    'EV/Revenue': stock_info.get('enterpriseToRevenue', 'N/A'),
-                    'EV/EBITDA': stock_info.get('enterpriseToEbitda', 'N/A'),
-                    'ProfitMargin': stock_info.get('profitMargins', 'N/A'),
-                    'ROA': stock_info.get('returnOnAssets', 'N/A'),
-                    'ROE': stock_info.get('returnOnEquity', 'N/A'),
-                    'Revenue': stock_info.get('totalRevenue', 'N/A'),
-                    'NetIncome': stock_info.get('netIncomeToCommon', 'N/A'),
-                    'EPS': stock_info.get('trailingEps', 'N/A'),
-                    'TotalCash': stock_info.get('totalCash', 'N/A'),
-                    'DebtEquity': stock_info.get('debtToEquity', 'N/A'),
-                    'FreeCashFlow': stock_info.get('freeCashflow', 'N/A'),
-                })
-            except Exception:
-                continue
+            stock_info = get_stock_info(symbol) or {}
+            allocation_pct = (data['CurrentValue'] / total_value * 100) if total_value > 0 else 0
+            data.update({
+                'AllocationPercent': allocation_pct,
+                '52wHigh': stock_info.get('52w_high', data['CurrentPrice']),
+                '52wLow': stock_info.get('52w_low', data['CurrentPrice']),
+                'MarketCap': stock_info.get('marketCap', 'N/A'),
+                'TrailingPE': stock_info.get('trailingPE', 'N/A'),
+                'ForwardPE': stock_info.get('forwardPE', 'N/A'),
+                'PEGRatio': stock_info.get('pegRatio', 'N/A'),
+                'PriceToSales': stock_info.get('priceToSalesTrailing12Months', 'N/A'),
+                'PriceToBook': stock_info.get('priceToBook', 'N/A'),
+                'EV/Revenue': stock_info.get('enterpriseToRevenue', 'N/A'),
+                'EV/EBITDA': stock_info.get('enterpriseToEbitda', 'N/A'),
+                'ProfitMargin': stock_info.get('profitMargins', 'N/A'),
+                'ROA': stock_info.get('returnOnAssets', 'N/A'),
+                'ROE': stock_info.get('returnOnEquity', 'N/A'),
+                'Revenue': stock_info.get('totalRevenue', 'N/A'),
+                'NetIncome': stock_info.get('netIncomeToCommon', 'N/A'),
+                'EPS': stock_info.get('trailingEps', 'N/A'),
+                'TotalCash': stock_info.get('totalCash', 'N/A'),
+                'DebtEquity': stock_info.get('debtToEquity', 'N/A'),
+                'FreeCashFlow': stock_info.get('freeCashflow', 'N/A'),
+            })
 
         return jsonify({
             'success': True,
@@ -424,6 +413,48 @@ def valuation_dashboard_api():
     except Exception as e:
         logger.exception("Valuation dashboard error for user %s: %s", user_email, e)
         return jsonify({'success': False, 'error': "Error loading valuation data"}), 500
+
+
+# ---------------------- Capital Gains ----------------------
+@finance_bp.route('/api/capital_gains', methods=['GET', 'OPTIONS'])
+@google_jwt_required
+def capital_gains_api():
+    if request.method == 'OPTIONS':
+        return _cors_options()
+
+    user = request.user
+    user_id = user.get("id")
+    user_email = user.get("email")
+    if not user_id:
+        return jsonify({'success': False, 'error': "user_id missing"}), 400
+
+    try:
+        transactions = fetch_transactions_for_user(user_id)
+        if not transactions:
+            return jsonify({'success': False, 'error': "No transactions found"}), 404
+
+        breakdown = capital_gains_breakdown(transactions)
+        per_stock = breakdown.get('per_stock', {})
+
+        # Add IRR per stock
+        for stock, data in per_stock.items():
+            irr_val = calculate_portfolio_xirr([tx for tx in transactions if tx['stock'] == stock])
+            data['IRR'] = irr_val
+
+        totals = breakdown.get('totals', {'STCG': 0.0, 'LTCG': 0.0})
+        total_capital = totals.get('STCG', 0.0) + totals.get('LTCG', 0.0)
+
+        return jsonify({
+            'success': True,
+            'perStock': per_stock,
+            'totals': totals,
+            'totalCapitalGains': total_capital,
+            'current_user': {'email': user_email, 'is_authenticated': True}
+        })
+    except Exception as e:
+        logger.exception("Capital gains error for user %s: %s", user_email, e)
+        return jsonify({'success': False, 'error': "Error loading capital gains"}), 500
+
 
 # ---------------------- Clear transactions ----------------------
 @finance_bp.route('/api/clear_transactions', methods=['POST', 'OPTIONS'])
