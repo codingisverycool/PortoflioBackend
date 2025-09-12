@@ -5,9 +5,64 @@ from functools import lru_cache
 from typing import List, Dict, Optional
 import yfinance as yf
 import math
+from decimal import Decimal
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
+
+def _to_native_number(v):
+    """Convert Decimal/numpy/... to native float/int where reasonable."""
+    try:
+        if isinstance(v, Decimal):
+            return float(v)
+        # add other conversions if you use numpy: `import numpy as np` then `isinstance(v, np.generic)`
+        return v
+    except Exception:
+        return None
+
+def _is_bad_number(v):
+    """Return True for NaN/Infinity or non-serializable numeric types."""
+    try:
+        if isinstance(v, (float,)):
+            return math.isnan(v) or math.isinf(v)
+        return False
+    except Exception:
+        return True
+
+def _sanitize_obj(o, path=""):
+    """
+    Recursively sanitize: replace NaN/Inf with None (or 0.0 if you prefer numeric fallback).
+    Also convert Decimal -> float, ensure only JSON-serializable types remain.
+    """
+    if isinstance(o, dict):
+        out = {}
+        for k, v in o.items():
+            new_path = f"{path}.{k}" if path else k
+            out[k] = _sanitize_obj(v, new_path)
+        return out
+    elif isinstance(o, list):
+        return [_sanitize_obj(item, f"{path}[]") for item in o]
+    else:
+        # convert Decimal -> float
+        try:
+            o = _to_native_number(o)
+        except Exception:
+            pass
+        # handle floats
+        if isinstance(o, float):
+            if math.isnan(o) or math.isinf(o):
+                logger.warning("Sanitizer replaced non-finite at %s (was %s)", path, o)
+                return None   # use 0.0 if you prefer
+            return o
+        # if it's int/str/bool/None, pass through
+        if isinstance(o, (int, str, bool)) or o is None:
+            return o
+        # fallback: try to coerce to str
+        try:
+            return str(o)
+        except Exception:
+            logger.warning("Sanitizer coerced unhandled type at %s to null", path)
+            return None
 
 # ----------------------
 # Stock Info (cached)
