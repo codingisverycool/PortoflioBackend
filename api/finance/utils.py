@@ -2,13 +2,14 @@
 import logging
 from datetime import datetime, timedelta
 from functools import lru_cache
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 import yfinance as yf
 import math
 from decimal import Decimal
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
+
 
 def _to_native_number(v):
     """Convert Decimal/numpy/... to native float/int where reasonable."""
@@ -20,6 +21,7 @@ def _to_native_number(v):
     except Exception:
         return None
 
+
 def _is_bad_number(v):
     """Return True for NaN/Infinity or non-serializable numeric types."""
     try:
@@ -28,6 +30,7 @@ def _is_bad_number(v):
         return False
     except Exception:
         return True
+
 
 def _sanitize_obj(o, path=""):
     """
@@ -64,6 +67,7 @@ def _sanitize_obj(o, path=""):
             logger.warning("Sanitizer coerced unhandled type at %s to null", path)
             return None
 
+
 # ----------------------
 # Stock Info (cached)
 # ----------------------
@@ -82,15 +86,20 @@ def get_stock_info(ticker: str) -> dict:
         stock = yf.Ticker(ticker)
         info = stock.info or {}
         price = info.get("regularMarketPrice") or 0.0
-        hist = stock.history(period="1d")
-        if hist is not None and not hist.empty:
+        hist = None
+        try:
+            hist = stock.history(period="1d")
+        except Exception:
+            # yfinance can be flaky; ignore history failures and rely on info
+            logger.debug("yfinance history failed for %s", ticker)
+        if hist is not None and not getattr(hist, "empty", True):
             try:
                 price = float(hist["Close"].iloc[-1])
             except Exception:
                 pass
 
         return {
-            "price": price,
+            "price": _to_native_number(price) or 0.0,
             "currency": info.get("currency", "N/A"),
             "exchange": info.get("exchange", "N/A"),
             "industry": info.get("industry", "N/A"),
@@ -124,6 +133,30 @@ def get_stock_info(ticker: str) -> dict:
 
 
 # ----------------------
+# Utilities
+# ----------------------
+
+def _ensure_date(d) -> Optional[datetime]:
+    """Ensure we return a datetime when possible.
+    Accepts datetime or ISO 'YYYY-MM-DD' strings. Returns None otherwise.
+    """
+    if d is None:
+        return None
+    if isinstance(d, datetime):
+        return d
+    if isinstance(d, str):
+        try:
+            return datetime.strptime(d, "%Y-%m-%d")
+        except Exception:
+            # try ISO full parse
+            try:
+                return datetime.fromisoformat(d)
+            except Exception:
+                return None
+    return None
+
+
+# ----------------------
 # XNPV / XIRR implementation
 # ----------------------
 def _xnpv(rate: float, cash_flows: List[float], dates: List[datetime]) -> float:
@@ -132,6 +165,11 @@ def _xnpv(rate: float, cash_flows: List[float], dates: List[datetime]) -> float:
     t0 = dates[0]
     npv = 0.0
     for cf, d in zip(cash_flows, dates):
+        # defensive: ensure d is datetime
+        if not isinstance(d, datetime):
+            d = _ensure_date(d)
+            if d is None:
+                continue
         days = (d - t0).days
         npv += cf / ((1.0 + rate) ** (days / 365.0))
     return npv
@@ -143,6 +181,10 @@ def _dxnpv(rate: float, cash_flows: List[float], dates: List[datetime]) -> float
     t0 = dates[0]
     deriv = 0.0
     for cf, d in zip(cash_flows, dates):
+        if not isinstance(d, datetime):
+            d = _ensure_date(d)
+            if d is None:
+                continue
         days = (d - t0).days
         power = (days / 365.0)
         deriv += -cf * power / ((1.0 + rate) ** (power + 1.0))
@@ -154,6 +196,12 @@ def xirr(cash_flows: List[float], dates: List[datetime], guess: float = 0.1, max
     Robust XIRR calculation that avoids NaN and returns 0 if calculation fails.
     """
     if not cash_flows or not dates or len(cash_flows) != len(dates):
+        return 0.0
+
+    # convert dates defensively
+    dates = [_ensure_date(d) for d in dates]
+    if any(d is None for d in dates):
+        logger.warning("xirr received invalid dates; aborting")
         return 0.0
 
     # Ensure we have at least one negative and one positive cash flow
@@ -187,6 +235,7 @@ def compute_holdings_from_transactions(transactions: List[Dict]) -> Dict[str, Di
     holdings: Dict[str, Dict] = {}
     lots: Dict[str, List[Dict]] = {}
     realized_gains: Dict[str, float] = {}
+    # sort by date string (ISO 'YYYY-MM-DD' works lexicographically); fallback to empty string
     txs = sorted(transactions, key=lambda x: x.get("date", ""))
 
     for tx in txs:
@@ -196,7 +245,7 @@ def compute_holdings_from_transactions(transactions: List[Dict]) -> Dict[str, Di
             qty = int(tx.get("quantity", 0))
             price = float(tx.get("price", 0.0))
             date_str = tx.get("date")
-            date = datetime.strptime(date_str, "%Y-%m-%d") if date_str else None
+            date = _ensure_date(date_str)
         except Exception:
             logger.exception("Skipping malformed transaction: %s", tx)
             continue
@@ -207,7 +256,8 @@ def compute_holdings_from_transactions(transactions: List[Dict]) -> Dict[str, Di
                 "quantity": 0,
                 "total_cost": 0.0,
                 "avg_cost": 0.0,
-                "first_buy_date": date_str,
+                # store first_buy_date as ISO string for consistency
+                "first_buy_date": date_str if date_str else None,
                 "realized_gain": 0.0,
                 "unrealized_gain": 0.0,
                 "lots": [],
@@ -219,17 +269,27 @@ def compute_holdings_from_transactions(transactions: List[Dict]) -> Dict[str, Di
             lots[stock].append({"quantity": qty, "price": price, "date": date})
             holdings[stock]["quantity"] += qty
             holdings[stock]["total_cost"] += qty * price
-            holdings[stock]["first_buy_date"] = min(
-                holdings[stock]["first_buy_date"], date_str
-            ) if holdings[stock]["first_buy_date"] else date_str
+            # keep first_buy_date as the earliest ISO string
+            if date:
+                current_first = holdings[stock]["first_buy_date"]
+                try:
+                    if current_first:
+                        # compare as dates
+                        cfd = _ensure_date(current_first)
+                        if cfd is None or date < cfd:
+                            holdings[stock]["first_buy_date"] = date.date().isoformat()
+                    else:
+                        holdings[stock]["first_buy_date"] = date.date().isoformat()
+                except Exception:
+                    holdings[stock]["first_buy_date"] = date.date().isoformat()
         elif tx_type == "Sell":
             sell_qty = qty
             cost_removed = 0.0
             proceeds = qty * price
             while sell_qty > 0 and lots[stock]:
                 lot = lots[stock][0]
-                lot_qty = int(lot["quantity"])
-                lot_price = float(lot["price"])
+                lot_qty = int(lot.get("quantity", 0))
+                lot_price = float(lot.get("price", 0.0))
                 matched_qty = min(sell_qty, lot_qty)
                 cost_removed += matched_qty * lot_price
                 if matched_qty >= lot_qty:
@@ -252,7 +312,16 @@ def compute_holdings_from_transactions(transactions: List[Dict]) -> Dict[str, Di
         except Exception:
             market_price = 0.0
         h["unrealized_gain"] = market_price * qty - total_cost
-        h["lots"] = lots.get(stock, [])
+        # ensure lots are serializable (convert dates to ISO)
+        serial_lots = []
+        for lot in lots.get(stock, []):
+            ld = lot.get("date")
+            serial_lots.append({
+                "quantity": int(lot.get("quantity", 0)),
+                "price": _to_native_number(lot.get("price", 0.0)),
+                "date": ld.date().isoformat() if isinstance(ld, datetime) else (ld if ld else None),
+            })
+        h["lots"] = serial_lots
 
     return holdings
 
@@ -273,7 +342,7 @@ def capital_gains_breakdown(transactions: List[Dict], st_threshold_days: int = 3
             qty = int(tx.get("quantity", 0))
             price = float(tx.get("price", 0.0))
             date_str = tx.get("date")
-            date = datetime.strptime(date_str, "%Y-%m-%d") if date_str else None
+            date = _ensure_date(date_str)
         except Exception:
             logger.exception("Skipping malformed transaction in capital gains calc: %s", tx)
             continue
@@ -291,14 +360,16 @@ def capital_gains_breakdown(transactions: List[Dict], st_threshold_days: int = 3
             sell_date = date
             while sell_qty > 0 and buy_lots[stock]:
                 lot = buy_lots[stock][0]
-                lot_qty = int(lot["quantity"])
-                lot_price = float(lot["price"])
-                lot_date = lot["date"]
+                lot_qty = int(lot.get("quantity", 0))
+                lot_price = float(lot.get("price", 0.0))
+                lot_date = lot.get("date")
                 matched_qty = min(sell_qty, lot_qty)
                 cost_basis = matched_qty * lot_price
                 proceeds = matched_qty * sell_price
                 gain = proceeds - cost_basis
-                holding_days = (sell_date - lot_date).days if lot_date and sell_date else st_threshold_days
+                holding_days = (
+                    (sell_date - lot_date).days if isinstance(sell_date, datetime) and isinstance(lot_date, datetime) else st_threshold_days
+                )
                 gain_type = "STCG" if holding_days < st_threshold_days else "LTCG"
                 per_stock[stock][gain_type] += gain
                 totals[gain_type] += gain
@@ -308,8 +379,8 @@ def capital_gains_breakdown(transactions: List[Dict], st_threshold_days: int = 3
                     "sell_price": sell_price,
                     "gain": gain,
                     "type": gain_type,
-                    "buy_date": lot_date.isoformat() if lot_date else None,
-                    "sell_date": sell_date.isoformat() if sell_date else None,
+                    "buy_date": lot_date.date().isoformat() if isinstance(lot_date, datetime) else None,
+                    "sell_date": sell_date.date().isoformat() if isinstance(sell_date, datetime) else None,
                     "holding_days": holding_days,
                 })
                 if matched_qty >= lot_qty:
@@ -328,17 +399,17 @@ def capital_gains_breakdown(transactions: List[Dict], st_threshold_days: int = 3
                     "gain": unmatched_proceeds,
                     "type": "STCG",
                     "buy_date": None,
-                    "sell_date": sell_date.isoformat() if sell_date else None,
+                    "sell_date": sell_date.date().isoformat() if isinstance(sell_date, datetime) else None,
                     "holding_days": None,
                 })
 
     # Ensure no NaNs
     for stock, data in per_stock.items():
         for key in ["STCG", "LTCG"]:
-            if data[key] is None or math.isnan(data[key]):
+            if data[key] is None or (isinstance(data[key], float) and math.isnan(data[key])):
                 data[key] = 0.0
     for key in ["STCG", "LTCG"]:
-        if totals[key] is None or math.isnan(totals[key]):
+        if totals[key] is None or (isinstance(totals[key], float) and math.isnan(totals[key])):
             totals[key] = 0.0
 
     return {"per_stock": per_stock, "totals": totals}
@@ -362,7 +433,9 @@ def calculate_portfolio_xirr(transactions: List[Dict], fy_anchor_month: int = 4)
             date_str = tx.get("date")
             if not date_str:
                 continue
-            date = datetime.strptime(date_str, "%Y-%m-%d")
+            date = _ensure_date(date_str)
+            if not date:
+                continue
             if date < fy_start:
                 continue
             qty = float(tx.get("quantity", 0))
@@ -387,12 +460,14 @@ def calculate_portfolio_xirr(transactions: List[Dict], fy_anchor_month: int = 4)
         dates.append(today)
 
     # Remove zero cash flows to avoid division by zero
-    non_zero_flows = [(cf, dt) for cf, dt in zip(cash_flows, dates) if cf != 0.0]
+    non_zero_flows: List[Tuple[float, datetime]] = [(cf, dt) for cf, dt in zip(cash_flows, dates) if cf != 0.0 and _ensure_date(dt) is not None]
     if len(non_zero_flows) < 2:
         return 0.0
 
+    # sort by date
     sorted_flows = sorted(non_zero_flows, key=lambda x: x[1])
-    sorted_dates, sorted_cash_flows = zip(*sorted_flows)
+    # correct unpacking: flows are (cash_flow, date)
+    sorted_cash_flows, sorted_dates = zip(*sorted_flows)
 
     rate = xirr(list(sorted_cash_flows), list(sorted_dates))
     if math.isnan(rate) or math.isinf(rate):
@@ -410,7 +485,10 @@ def calculate_daily_pnl(transactions: List[Dict]) -> Dict[str, Dict]:
     for stock, h in holdings.items():
         qty = h["quantity"]
         avg_cost = h["avg_cost"]
-        current_price = float(get_stock_info(stock).get("price", 0.0))
+        try:
+            current_price = float(get_stock_info(stock).get("price", 0.0))
+        except Exception:
+            current_price = 0.0
         unrealized = qty * (current_price - avg_cost)
         result["stocks"][stock] = {
             "quantity": qty,
