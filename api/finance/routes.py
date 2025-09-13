@@ -14,7 +14,6 @@ from api.finance.transactions.csv_upload import validate_and_normalize_transacti
 from api.finance.models import fetch_transactions_for_user, insert_transaction_locked
 from api.finance.utils import (
     get_stock_info,
-    calculate_realized_and_initial_investment,
     compute_holdings_from_transactions,
     calculate_portfolio_xirr,
     capital_gains_breakdown
@@ -41,9 +40,7 @@ def _cors_options():
 
 # ---------------------- Helper: enhance transactions list ----------------------
 def _enhance_transactions(transactions):
-    """
-    Attach market name and value to transactions
-    """
+    """Attach market name and value to transactions"""
     enhanced = []
     for tx in transactions:
         try:
@@ -100,7 +97,7 @@ def transactions_bulk_api():
 
         insert_errors = []
 
-        # Insert each valid row via insert_transaction_locked
+        # Insert each valid row
         for idx, row in valid_rows:
             try:
                 price_val = row['price']
@@ -109,7 +106,7 @@ def transactions_bulk_api():
 
                 insert_transaction_locked(
                     user_id,
-                    row['type'],          # 'Buy' or 'Sell'
+                    row['type'],  # 'Buy' or 'Sell'
                     row['stock'],
                     int(row['quantity']),
                     price_val,
@@ -124,7 +121,7 @@ def transactions_bulk_api():
 
         errors.extend(insert_errors)
 
-        # Fetch updated transactions for response
+        # Fetch updated transactions
         try:
             transactions_db = fetch_transactions_for_user(user_id)
             enhanced = _enhance_transactions(transactions_db)
@@ -156,7 +153,6 @@ def transactions_api():
     if not user_id:
         return jsonify({'success': False, 'error': "user_id missing"}), 400
 
-    # GET: return transactions only (metrics moved to capital gains)
     if request.method == 'GET':
         try:
             transactions = fetch_transactions_for_user(user_id)
@@ -170,7 +166,6 @@ def transactions_api():
             logger.exception("Error fetching transactions for user %s: %s", user_email, e)
             return jsonify({'success': False, 'error': 'Failed to load transactions'}), 500
 
-    # POST: create a single transaction
     try:
         data = request.get_json() or request.form
         tx_type = safe_str(data.get('type')).title()
@@ -219,10 +214,14 @@ def portfolio_tracker_api():
         if not holdings:
             return jsonify({'success': False, 'error': 'No holdings found.'}), 200
 
-        realized_gains, initial_investment, remaining_cost_basis, remaining_qty = calculate_realized_and_initial_investment(transactions)
+        # Use holdings + XIRR (no old function)
         portfolio_xirr = calculate_portfolio_xirr(transactions)
+        realized_gains = {s: h.get("realized_gain", 0.0) for s, h in holdings.items()}
+        initial_investment = {s: h.get("total_cost", 0.0) for s, h in holdings.items()}
+        remaining_cost_basis = {s: h.get("total_cost", 0.0) for s, h in holdings.items()}
+        remaining_qty = {s: h.get("quantity", 0) for s, h in holdings.items()}
 
-        # ---------------------- Portfolio Overview Tab ----------------------
+        # Portfolio Overview Tab
         overview_data = []
         total_value = 0.0
         total_cost = 0.0
@@ -266,8 +265,7 @@ def portfolio_tracker_api():
             cv = entry.get('Current Value', 0)
             entry['AllocationPercent'] = (cv / total_value) * 100 if total_value > 0 else 0
 
-        # ---------------------- Portfolio Summary Tab ----------------------
-        # Daily P&L calculation: using yesterday close price
+        # Portfolio Summary Tab
         summary_data = []
         today = datetime.utcnow().date()
         yesterday = today - timedelta(days=1)
@@ -283,12 +281,10 @@ def portfolio_tracker_api():
             summary_entry['DayChangePct'] = ((day_change / entry['CMP']) * 100) if entry['CMP'] else 0
             summary_data.append(summary_entry)
 
-        # Top 5 gainers/losers (daily)
         sorted_daily = sorted(summary_data, key=lambda x: x['DayChangePct'], reverse=True)
         top_5_gainers_daily = sorted_daily[:5]
         top_5_losers_daily = sorted_daily[-5:]
 
-        # Market overview
         indices = {
             'nasdaq': '^IXIC',
             'sp500': '^GSPC',
@@ -441,14 +437,9 @@ def capital_gains_api():
             irr_val = calculate_portfolio_xirr([tx for tx in transactions if tx['stock'] == stock])
             data['IRR'] = irr_val
 
-        totals = breakdown.get('totals', {'STCG': 0.0, 'LTCG': 0.0})
-        total_capital = totals.get('STCG', 0.0) + totals.get('LTCG', 0.0)
-
         return jsonify({
             'success': True,
-            'perStock': per_stock,
-            'totals': totals,
-            'totalCapitalGains': total_capital,
+            'capitalGains': breakdown,
             'current_user': {'email': user_email, 'is_authenticated': True}
         })
     except Exception as e:
@@ -456,8 +447,8 @@ def capital_gains_api():
         return jsonify({'success': False, 'error': "Error loading capital gains"}), 500
 
 
-# ---------------------- Clear transactions ----------------------
-@finance_bp.route('/api/clear_transactions', methods=['POST', 'OPTIONS'])
+# ---------------------- Clear Transactions ----------------------
+@finance_bp.route('/api/transactions/clear', methods=['POST', 'OPTIONS'])
 @google_jwt_required
 def clear_transactions_api():
     if request.method == 'OPTIONS':
@@ -470,8 +461,8 @@ def clear_transactions_api():
         return jsonify({'success': False, 'error': "user_id missing"}), 400
 
     try:
-        db_query("DELETE FROM transactions WHERE user_id = %s", (user_id,), commit=True)
-        return jsonify({'success': True, 'message': "All transactions cleared successfully."}), 200
+        db_query("DELETE FROM transactions WHERE user_id = %s;", (user_id,), commit=True)
+        return jsonify({'success': True, 'message': 'Transactions cleared.'})
     except Exception as e:
-        logger.exception("Clear transactions error for user %s: %s", user_email, e)
-        return jsonify({'success': False, 'error': "Error clearing transactions"}), 500
+        logger.exception("Error clearing transactions for user %s: %s", user_email, e)
+        return jsonify({'success': False, 'error': 'Error clearing transactions'}), 500
