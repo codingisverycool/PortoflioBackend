@@ -41,7 +41,6 @@ RISK_QUESTIONNAIRE = {
     ]
 }
 
-
 # ----------------------
 # Helper: Score computation
 # ----------------------
@@ -58,14 +57,12 @@ def _score_for_question(q_obj, raw_val):
                 return 0
     return 0
 
-
 # ----------------------
 # Routes
 # ----------------------
 @risk_bp.route("/api/risk/questionnaire", methods=["GET"])
 def get_risk_questionnaire():
     return jsonify({"success": True, "questionnaire": RISK_QUESTIONNAIRE})
-
 
 @risk_bp.route("/api/risk/submit", methods=["POST", "OPTIONS"])
 @google_jwt_required
@@ -82,7 +79,6 @@ def submit_risk():
         return resp
 
     try:
-        # Accept either JSON or form-encoded data
         payload = request.get_json(silent=True)
         if not isinstance(payload, dict):
             payload = {k: request.form.get(k) for k in request.form}
@@ -94,22 +90,10 @@ def submit_risk():
             return jsonify({"success": False, "error": "user_id missing"}), 400
 
         # Compute score
-        total_score = 0
-        for q in RISK_QUESTIONNAIRE["questions"]:
-            qid = q.get("id")
-            answer_val = None
-            if isinstance(data.get(qid), (str, int)):
-                answer_val = data.get(qid)
-            elif isinstance(data.get("answers"), dict):
-                answer_val = data["answers"].get(qid)
-            total_score += _score_for_question(q, answer_val)
+        total_score = sum(_score_for_question(q, data.get(q.get("id")) or data.get("answers", {}).get(q.get("id"))) for q in RISK_QUESTIONNAIRE["questions"])
 
         # Determine bracket
-        risk_bracket = "Undetermined"
-        for bracket in RISK_QUESTIONNAIRE["risk_brackets"]:
-            if bracket["min"] <= total_score <= bracket["max"]:
-                risk_bracket = bracket["name"]
-                break
+        risk_bracket = next((b["name"] for b in RISK_QUESTIONNAIRE["risk_brackets"] if b["min"] <= total_score <= b["max"]), "Undetermined")
 
         profile_record = {
             "submitted_at": datetime.utcnow().isoformat(),
@@ -132,7 +116,6 @@ def submit_risk():
     except Exception as e:
         logger.exception("Risk submission error: %s", e)
         return jsonify({"success": False, "error": "Failed to process risk assessment"}), 500
-
 
 @risk_bp.route("/api/risk/check", methods=["GET"])
 @google_jwt_required
@@ -166,7 +149,6 @@ def check_risk_assessment():
     except Exception as e:
         logger.exception("Check risk assessment error: %s", e)
         return jsonify({"success": False, "error": "Failed to fetch assessment"}), 500
-
 
 @risk_bp.route("/api/risk/profile", methods=["GET"])
 @google_jwt_required
