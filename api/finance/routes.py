@@ -414,9 +414,9 @@ def valuation_dashboard_api():
         if not holdings:
             return jsonify({'success': False, 'error': "No current holdings to value"}), 404
 
+        # Pass 1: compute total portfolio value
         total_value = 0.0
-        valuation_data = {}
-
+        temp_data = {}
         for symbol, h in holdings.items():
             stock_info = get_stock_info(symbol) or {}
             current_price = float(stock_info.get('price', 0.0) or 0.0)
@@ -424,7 +424,7 @@ def valuation_dashboard_api():
             current_value = current_price * qty
             total_value += current_value
 
-            valuation_data[symbol] = {
+            temp_data[symbol] = {
                 'Name': stock_info.get('shortName', symbol),
                 'Currency': stock_info.get('currency', 'USD'),
                 'CurrentPrice': current_price,
@@ -432,7 +432,6 @@ def valuation_dashboard_api():
                 'CurrentValue': current_value,
                 'AvgCost': h.get('avg_cost', 0.0),
                 'UnrealizedGain': h.get('unrealized_gain', 0.0),
-                'AllocationPercent': (current_value / total_value * 100) if total_value > 0 else 0,
                 **{k: stock_info.get(k) for k in [
                     '52w_high', '52w_low', 'marketCap', 'trailingPE', 'forwardPE', 'pegRatio',
                     'priceToSalesTrailing12Months', 'priceToBook', 'enterpriseToRevenue',
@@ -442,6 +441,13 @@ def valuation_dashboard_api():
                 ]}
             }
 
+        # Pass 2: assign allocation percent correctly
+        valuation_data = {}
+        for symbol, v in temp_data.items():
+            current_value = v.get("CurrentValue", 0.0)
+            v["AllocationPercent"] = (current_value / total_value * 100) if total_value > 0 else 0
+            valuation_data[symbol] = v
+
         return jsonify(_sanitize_obj({
             'success': True,
             'valuationData': valuation_data,
@@ -449,9 +455,11 @@ def valuation_dashboard_api():
             'totalValue': total_value,
             'current_user': {'email': user_email, 'is_authenticated': True}
         }))
+
     except Exception as e:
         logger.exception("Valuation dashboard error for user %s: %s", user_email, e)
         return jsonify({'success': False, 'error': "Error loading valuation data"}), 500
+
 
 
 # ---------------------- Capital Gains ----------------------
