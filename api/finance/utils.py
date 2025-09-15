@@ -316,6 +316,7 @@ def compute_holdings_from_transactions(transactions: List[Dict]) -> Dict[str, Di
 # ----------------------
 # Capital Gains
 # ----------------------
+# api/finance/utils.py (capital_gains_breakdown function)
 def capital_gains_breakdown(transactions: List[Dict], st_threshold_days: int = 365) -> Dict:
     per_stock = {}
     totals = {"STCG": 0.0, "LTCG": 0.0}
@@ -354,14 +355,18 @@ def capital_gains_breakdown(transactions: List[Dict], st_threshold_days: int = 3
                 cost_basis = matched_qty * lot_price
                 proceeds = matched_qty * sell_price
                 gain = proceeds - cost_basis
+                
+                # Fix: Use proper field names (STCG/LTCG instead of stcg/ltcg)
                 if isinstance(sell_date, datetime) and isinstance(lot_date, datetime):
                     holding_days = (sell_date - lot_date).days
                     gain_type = "STCG" if holding_days < st_threshold_days else "LTCG"
                 else:
                     holding_days = None
                     gain_type = "STCG"
+                
                 per_stock[stock][gain_type] += gain
                 totals[gain_type] += gain
+                
                 per_stock[stock]["details"].append({
                     "sold_qty": matched_qty,
                     "buy_price": lot_price,
@@ -372,11 +377,13 @@ def capital_gains_breakdown(transactions: List[Dict], st_threshold_days: int = 3
                     "sell_date": sell_date.date().isoformat() if isinstance(sell_date, datetime) else None,
                     "holding_days": holding_days,
                 })
+                
                 if matched_qty >= lot_qty:
                     buy_lots[stock].pop(0)
                 else:
                     lot["quantity"] = lot_qty - matched_qty
                 sell_qty -= matched_qty
+            
             if sell_qty > 0:
                 unmatched_proceeds = sell_qty * sell_price
                 per_stock[stock]["STCG"] += unmatched_proceeds

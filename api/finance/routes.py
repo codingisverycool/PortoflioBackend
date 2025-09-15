@@ -361,8 +361,12 @@ def capital_gains_api():
 
         # Add IRR per stock
         for stock in breakdown.get('per_stock', {}):
-            irr_val = calculate_portfolio_xirr([tx for tx in transactions if tx['stock'] == stock])
-            breakdown['per_stock'][stock]['IRR'] = irr_val
+            stock_transactions = [tx for tx in transactions if tx['stock'] == stock]
+            if stock_transactions:
+                irr_val = calculate_portfolio_xirr(stock_transactions)
+                breakdown['per_stock'][stock]['IRR'] = irr_val
+            else:
+                breakdown['per_stock'][stock]['IRR'] = 0.0
 
         return jsonify(_sanitize_obj({
             'success': True,
