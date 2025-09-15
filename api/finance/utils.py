@@ -2,7 +2,7 @@
 import logging
 from datetime import datetime, timedelta
 from functools import lru_cache
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional
 import yfinance as yf
 import math
 from decimal import Decimal
@@ -44,7 +44,7 @@ def _sanitize_obj(o, path=""):
         o = _to_native_number(o)
         if isinstance(o, float) and (_is_bad_number(o)):
             logger.warning("Sanitizer replaced non-finite at %s (was %s)", path, o)
-            return None
+            return 0.0
         if isinstance(o, (int, str, bool)) or o is None:
             return o
         try:
@@ -61,13 +61,15 @@ def _ensure_date(d) -> Optional[datetime]:
     if isinstance(d, datetime):
         return d
     if isinstance(d, str):
-        try:
-            return datetime.strptime(d, "%Y-%m-%d")
-        except Exception:
+        for fmt in ("%Y-%m-%d", "%Y-%m-%d %H:%M:%S"):
             try:
-                return datetime.fromisoformat(d)
+                return datetime.strptime(d, fmt)
             except Exception:
-                return None
+                continue
+        try:
+            return datetime.fromisoformat(d)
+        except Exception:
+            return None
     return None
 
 
@@ -79,65 +81,82 @@ def get_stock_info(ticker: str) -> dict:
     ticker = (ticker or "").upper()
     fallback = {
         "price": 0.0,
-        "shortName": ticker,
-        "name": ticker,
+        "prev_close": 0.0,
         "currency": "N/A",
         "exchange": "N/A",
+        "industry": "N/A",
         "sector": "N/A",
         "52w_high": 0.0,
         "52w_low": 0.0,
-        "prev_close": 0.0,
+        "shortName": ticker,
+        "longName": ticker,
+        "name": ticker,
+        "marketCap": 0.0,
+        "trailingPE": 0.0,
+        "forwardPE": 0.0,
+        "pegRatio": 0.0,
+        "priceToSalesTrailing12Months": 0.0,
+        "priceToBook": 0.0,
+        "enterpriseToRevenue": 0.0,
+        "enterpriseToEbitda": 0.0,
+        "profitMargins": 0.0,
+        "returnOnAssets": 0.0,
+        "returnOnEquity": 0.0,
+        "totalRevenue": 0.0,
+        "netIncomeToCommon": 0.0,
+        "trailingEps": 0.0,
+        "totalCash": 0.0,
+        "debtToEquity": 0.0,
+        "freeCashflow": 0.0,
     }
     try:
         stock = yf.Ticker(ticker)
         info = stock.info or {}
+
         price = info.get("regularMarketPrice") or 0.0
         prev_close = info.get("regularMarketPreviousClose") or price
-        hist = None
+
         try:
             hist = stock.history(period="1d")
+            if hist is not None and not getattr(hist, "empty", True):
+                price = float(hist["Close"].iloc[-1])
         except Exception:
             logger.debug("yfinance history failed for %s", ticker)
-        if hist is not None and not getattr(hist, "empty", True):
-            try:
-                price = float(hist["Close"].iloc[-1])
-            except Exception:
-                pass
 
         return {
+            **fallback,
             "price": _to_native_number(price) or 0.0,
             "prev_close": _to_native_number(prev_close) or 0.0,
             "currency": info.get("currency", "N/A"),
             "exchange": info.get("exchange", "N/A"),
             "industry": info.get("industry", "N/A"),
             "sector": info.get("sector", "N/A"),
-            "52w_high": info.get("fiftyTwoWeekHigh", info.get("52WeekHigh", price)),
-            "52w_low": info.get("fiftyTwoWeekLow", info.get("52WeekLow", price)),
+            "52w_high": _to_native_number(info.get("fiftyTwoWeekHigh") or info.get("52WeekHigh") or price) or 0.0,
+            "52w_low": _to_native_number(info.get("fiftyTwoWeekLow") or info.get("52WeekLow") or price) or 0.0,
             "shortName": info.get("shortName", ticker),
             "longName": info.get("longName", ticker),
             "name": info.get("shortName") or info.get("longName") or ticker,
-            "marketCap": info.get("marketCap", 0),
-            "trailingPE": info.get("trailingPE", 0),
-            "forwardPE": info.get("forwardPE", 0),
-            "pegRatio": info.get("pegRatio", 0),
-            "priceToSalesTrailing12Months": info.get("priceToSalesTrailing12Months", 0),
-            "priceToBook": info.get("priceToBook", 0),
-            "enterpriseToRevenue": info.get("enterpriseToRevenue", 0),
-            "enterpriseToEbitda": info.get("enterpriseToEbitda", 0),
-            "profitMargins": info.get("profitMargins", 0),
-            "returnOnAssets": info.get("returnOnAssets", 0),
-            "returnOnEquity": info.get("returnOnEquity", 0),
-            "totalRevenue": info.get("totalRevenue", 0),
-            "netIncomeToCommon": info.get("netIncomeToCommon", 0),
-            "trailingEps": info.get("trailingEps", 0),
-            "totalCash": info.get("totalCash", 0),
-            "debtToEquity": info.get("debtToEquity", 0),
-            "freeCashflow": info.get("freeCashflow", 0),
+            "marketCap": _to_native_number(info.get("marketCap")) or 0.0,
+            "trailingPE": _to_native_number(info.get("trailingPE")) or 0.0,
+            "forwardPE": _to_native_number(info.get("forwardPE")) or 0.0,
+            "pegRatio": _to_native_number(info.get("pegRatio")) or 0.0,
+            "priceToSalesTrailing12Months": _to_native_number(info.get("priceToSalesTrailing12Months")) or 0.0,
+            "priceToBook": _to_native_number(info.get("priceToBook")) or 0.0,
+            "enterpriseToRevenue": _to_native_number(info.get("enterpriseToRevenue")) or 0.0,
+            "enterpriseToEbitda": _to_native_number(info.get("enterpriseToEbitda")) or 0.0,
+            "profitMargins": _to_native_number(info.get("profitMargins")) or 0.0,
+            "returnOnAssets": _to_native_number(info.get("returnOnAssets")) or 0.0,
+            "returnOnEquity": _to_native_number(info.get("returnOnEquity")) or 0.0,
+            "totalRevenue": _to_native_number(info.get("totalRevenue")) or 0.0,
+            "netIncomeToCommon": _to_native_number(info.get("netIncomeToCommon")) or 0.0,
+            "trailingEps": _to_native_number(info.get("trailingEps")) or 0.0,
+            "totalCash": _to_native_number(info.get("totalCash")) or 0.0,
+            "debtToEquity": _to_native_number(info.get("debtToEquity")) or 0.0,
+            "freeCashflow": _to_native_number(info.get("freeCashflow")) or 0.0,
         }
     except Exception as e:
         logger.exception("Error fetching data for %s: %s", ticker, e)
         return fallback
-
 
 # ----------------------
 # XNPV / XIRR
