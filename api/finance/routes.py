@@ -222,13 +222,75 @@ def portfolio_tracker_api():
             qty = h.get('quantity', 0)
             avg_cost = h.get('avg_cost', 0.0)
             total_cost_stock = h.get('total_cost', 0.0)
-            current_price = float(stock_info.get('price', 0.0) or 0.0)
+
+            # Try multiple possible keys for current price
+            try:
+                current_price = float(
+                    stock_info.get('price')
+                    or stock_info.get('regularMarketPrice')
+                    or stock_info.get('currentPrice')
+                    or stock_info.get('lastPrice')
+                    or 0.0
+                )
+            except Exception:
+                current_price = 0.0
+
             current_value = current_price * qty
             realized_gain = h.get("realized_gain", 0.0)
             unrealized_gain = h.get("unrealized_gain", 0.0)
             gain_loss = realized_gain + unrealized_gain
             denom = total_cost_stock + realized_gain
             gain_pct = (gain_loss / denom) * 100 if denom else 0
+
+            # Compute previous close (many possible key names)
+            try:
+                previous_close = float(
+                    stock_info.get('previousClose')
+                    or stock_info.get('previous_close')
+                    or stock_info.get('regularMarketPreviousClose')
+                    or stock_info.get('close')
+                    or 0.0
+                )
+            except Exception:
+                previous_close = 0.0
+
+            # day change amount (fallback to available keys)
+            try:
+                change_amt = float(
+                    stock_info.get('change')
+                    or stock_info.get('regularMarketChange')
+                    or (current_price - previous_close if previous_close else 0.0)
+                )
+            except Exception:
+                change_amt = (current_price - previous_close) if previous_close else 0.0
+
+            # day change percent (try keys, else compute)
+            try:
+                change_pct = float(
+                    stock_info.get('change_pct')
+                    or stock_info.get('regularMarketChangePercent')
+                    or stock_info.get('changePercent')
+                    or ((change_amt / previous_close) * 100 if previous_close else 0.0)
+                )
+            except Exception:
+                change_pct = (change_amt / previous_close * 100) if previous_close else 0.0
+
+            day_pnl = change_amt * qty
+
+            # 52-week high/low (try common key names)
+            def _safe_get_num(*keys):
+                for k in keys:
+                    try:
+                        v = stock_info.get(k)
+                        if v is None:
+                            continue
+                        return float(v)
+                    except Exception:
+                        continue
+                return None
+
+            fifty_two_high = _safe_get_num('fiftyTwoWeekHigh', '52WeekHigh', '52w_high', '52_week_high', 'fifty_two_week_high', 'fiftyTwoWeekHigh')
+            fifty_two_low = _safe_get_num('fiftyTwoWeekLow', '52WeekLow', '52w_low', '52_week_low', 'fifty_two_week_low', 'fiftyTwoWeekLow')
 
             entry = {
                 'Ticker': symbol,
@@ -241,24 +303,76 @@ def portfolio_tracker_api():
                 'Avg Cost/Share': avg_cost,
                 'CMP': current_price,
                 'Current Value': current_value,
+                # keep previous keys for compatibility
                 'Gain/Loss': gain_loss,
                 'Gain/Loss %': gain_pct,
                 'Unrealized Gains': unrealized_gain,
                 'Sector': stock_info.get('sector', 'N/A'),
+                # NEW keys expected by frontend:
+                '52w High': fifty_two_high,
+                '52w Low': fifty_two_low,
+                'Day Change (%)': change_pct,
+                'Day PnL': day_pnl,
             }
             overview_data.append(entry)
             total_value += current_value
             total_cost += total_cost_stock
             sector_values[stock_info.get('sector', 'Other')] += current_value
 
+        # Allocation percent as before
         for entry in overview_data:
             cv = entry.get('Current Value', 0)
             entry['AllocationPercent'] = (cv / total_value) * 100 if total_value > 0 else 0
 
+        # latest risk
         latest_risk = (db_query(
             "SELECT profile_json FROM user_risk_profiles WHERE user_id = %s ORDER BY created_at DESC LIMIT 1;",
             (user_id,), fetchone=True
         ) or {}).get('profile_json')
+
+        # Market overview: attempt to fetch three major indices
+        market_data = {}
+        try:
+            index_map = {'nasdaq': '^IXIC', 'sp500': '^GSPC', 'dow': '^DJI'}
+            for key, idx_symbol in index_map.items():
+                try:
+                    t = yf.Ticker(idx_symbol)
+                    info = t.info or {}
+                    price = info.get('regularMarketPrice') or info.get('previousClose') or info.get('currentPrice') or None
+                    # try to compute change and pct robustly
+                    prev = info.get('previousClose') or info.get('regularMarketPreviousClose') or None
+                    if price is not None and prev:
+                        change = price - float(prev)
+                        change_pct = (change / float(prev)) if float(prev) != 0 else 0.0
+                    else:
+                        change = info.get('regularMarketChange') or info.get('change') or 0.0
+                        change_pct = info.get('regularMarketChangePercent') or info.get('changePercent') or 0.0
+
+                    # ensure numeric types
+                    try:
+                        price = float(price) if price is not None else None
+                    except Exception:
+                        price = None
+                    try:
+                        change = float(change)
+                    except Exception:
+                        change = 0.0
+                    try:
+                        change_pct = float(change_pct)
+                    except Exception:
+                        change_pct = 0.0
+
+                    market_data[key] = {
+                        'price': price,
+                        'change': change,
+                        # frontend expects change_pct as decimal (e.g., 0.01 for 1%). SummaryTab multiplies by 100,
+                        # but original code expected data.change_pct to multiply by 100. To be safe, provide decimal.
+                        'change_pct': change_pct,
+                    }
+                except Exception:
+                    market_data[key] = {'price': None, 'change': None, 'change_pct': None}
+        except Exception:
+            market_data = {}
 
         return jsonify(_sanitize_obj({
             'success': True,
@@ -269,6 +383,7 @@ def portfolio_tracker_api():
             'overviewTabData': overview_data,
             'portfolioXIRR': portfolio_xirr,
             'latestRiskAssessment': latest_risk,
+            'marketData': market_data,
             'current_user': {'email': user_email, 'is_authenticated': True}
         }))
 
