@@ -433,7 +433,7 @@ def valuation_dashboard_api():
                 'AvgCost': h.get('avg_cost', 0.0),
                 'UnrealizedGain': h.get('unrealized_gain', 0.0),
                 **{k: stock_info.get(k) for k in [
-                    '52w_high', '52w_low', 'marketCap', 'trailingPE', 'forwardPE', 'pegRatio',
+                    'fiftyTwoWeekHigh', 'fiftyTwoWeekLow', 'marketCap', 'trailingPE', 'forwardPE', 'pegRatio',
                     'priceToSalesTrailing12Months', 'priceToBook', 'enterpriseToRevenue',
                     'enterpriseToEbitda', 'profitMargins', 'returnOnAssets', 'returnOnEquity',
                     'totalRevenue', 'netIncomeToCommon', 'trailingEps', 'totalCash',

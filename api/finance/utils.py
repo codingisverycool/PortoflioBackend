@@ -42,20 +42,8 @@ def _to_float_safe(v: Any) -> Optional[float]:
 
 @lru_cache(maxsize=512)
 def get_stock_info(ticker: str) -> Dict[str, Any]:
-    """Return a normalized stock info dict for the given ticker.
+    """Return a normalized stock info dict for the given ticker."""
 
-    Normalized keys (guaranteed where possible):
-      - price (float or None)
-      - previousClose (float or None)
-      - fiftyTwoWeekHigh (float or None)
-      - fiftyTwoWeekLow (float or None)
-      - change (float, price - previousClose)
-      - change_pct (float, decimal e.g. 0.012 == 1.2%)
-      - shortName, currency, exchange, sector, marketCap, trailingPE, forwardPE
-
-    This function is defensive: it tries many common key names returned by yfinance
-    and falls back to history() where appropriate.
-    """
     ticker = (ticker or '').upper()
     if not ticker:
         return {}
@@ -81,35 +69,32 @@ def get_stock_info(ticker: str) -> Dict[str, Any]:
                     return v
             return fallback
 
-        # common metadata
+        # Basic metadata
         info_out['shortName'] = _pick('shortName', 'longName', 'name', fallback=ticker)
         info_out['currency'] = _pick('currency', 'quoteCurrency', fallback='USD')
         info_out['exchange'] = _pick('exchange', 'exchangeName', 'market', fallback=None)
         info_out['sector'] = _pick('sector', fallback=None)
         info_out['marketCap'] = _to_float_safe(_pick('marketCap', 'market_cap'))
-        info_out['trailingPE'] = _to_float_safe(_pick('trailingPE', 'trailingPE', 'trailingPE'))
-        info_out['forwardPE'] = _to_float_safe(_pick('forwardPE', 'forwardPE'))
+        info_out['trailingPE'] = _to_float_safe(_pick('trailingPE'))
+        info_out['forwardPE'] = _to_float_safe(_pick('forwardPE'))
 
-        # price and previous close
+        # Price and previous close
         price = _to_float_safe(_pick('regularMarketPrice', 'currentPrice', 'price', 'lastPrice'))
         prev_close = _to_float_safe(_pick('previousClose', 'previous_close', 'regularMarketPreviousClose'))
 
-        # If we didn't get price/prev from info, try history as fallback
+        # Fallback to history if missing
         if price is None or prev_close is None:
             try:
                 hist = t.history(period='5d', interval='1d')
                 if hist is not None and not hist.empty:
-                    # last available close
                     last_row = hist.iloc[-1]
                     close = _to_float_safe(last_row.get('Close'))
                     if price is None:
                         price = close
-                    # previous close as second last if available
                     if prev_close is None and len(hist) >= 2:
                         prev_row = hist.iloc[-2]
                         prev_close = _to_float_safe(prev_row.get('Close'))
             except Exception:
-                # ignore history failures
                 pass
 
         info_out['price'] = price
@@ -126,12 +111,12 @@ def get_stock_info(ticker: str) -> Dict[str, Any]:
                 change_amt = None
                 change_pct = None
 
-        # look for 52wk high/low
+        # 52-week high/low
         fifty_two_high = _to_float_safe(_pick('fiftyTwoWeekHigh', '52WeekHigh', 'fifty_two_week_high', '52w_high'))
         fifty_two_low = _to_float_safe(_pick('fiftyTwoWeekLow', '52WeekLow', 'fifty_two_week_low', '52w_low'))
 
-        # If missing, compute from 1y history
-        if (fifty_two_high is None or fifty_two_low is None):
+        # fallback from 1y history
+        if fifty_two_high is None or fifty_two_low is None:
             try:
                 hist_y = t.history(period='1y', interval='1d')
                 if hist_y is not None and not hist_y.empty:
@@ -146,8 +131,24 @@ def get_stock_info(ticker: str) -> Dict[str, Any]:
 
         info_out['fiftyTwoWeekHigh'] = fifty_two_high
         info_out['fiftyTwoWeekLow'] = fifty_two_low
-        info_out['change'] = change_amt if change_amt is not None else _to_float_safe(_pick('regularMarketChange', 'change'))
-        info_out['change_pct'] = change_pct if change_pct is not None else _to_float_safe(_pick('regularMarketChangePercent', 'changePercent'))
+        info_out['change'] = change_amt
+        info_out['change_pct'] = change_pct
+
+        # Financial ratios & fundamentals
+        info_out['pegRatio'] = _to_float_safe(_pick('pegRatio', 'forwardPEOverGrowth'))
+        info_out['priceToSalesTrailing12Months'] = _to_float_safe(_pick('priceToSalesTrailing12Months', 'pToS', 'ps'))
+        info_out['priceToBook'] = _to_float_safe(_pick('priceToBook', 'pToB', 'pb'))
+        info_out['enterpriseToRevenue'] = _to_float_safe(_pick('enterpriseToRevenue', 'EVToRevenue'))
+        info_out['enterpriseToEbitda'] = _to_float_safe(_pick('enterpriseToEbitda', 'EVToEbitda'))
+        info_out['profitMargins'] = _to_float_safe(_pick('profitMargins', 'profitMargin'))
+        info_out['returnOnAssets'] = _to_float_safe(_pick('returnOnAssets', 'ROA'))
+        info_out['returnOnEquity'] = _to_float_safe(_pick('returnOnEquity', 'ROE'))
+        info_out['totalRevenue'] = _to_float_safe(_pick('totalRevenue', 'revenue'))
+        info_out['netIncomeToCommon'] = _to_float_safe(_pick('netIncomeToCommon', 'netIncome'))
+        info_out['trailingEps'] = _to_float_safe(_pick('trailingEps', 'eps'))
+        info_out['totalCash'] = _to_float_safe(_pick('totalCash', 'cash'))
+        info_out['debtToEquity'] = _to_float_safe(_pick('debtToEquity', 'debtToEquityRatio'))
+        info_out['freeCashflow'] = _to_float_safe(_pick('freeCashflow', 'fcf'))
 
         # copy some additional fields verbatim if present
         for k in ['symbol', 'logo_url', 'website', 'industry', 'fullTimeEmployees']:
