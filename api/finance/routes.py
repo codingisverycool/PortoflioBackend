@@ -519,3 +519,30 @@ def clear_transactions_api():
     except Exception as e:
         logger.exception("Error clearing transactions for user %s: %s", user.get("email"), e)
         return jsonify({'success': False, 'error': 'Error clearing transactions'}), 500
+
+@finance_bp.route('/api/stock/validate', methods=['GET', 'OPTIONS'])
+@google_jwt_required
+def validate_ticker_api():
+    if request.method == 'OPTIONS':
+        return _cors_options()
+
+    ticker = request.args.get('ticker', '').strip().upper()
+    if not ticker:
+        return jsonify({'valid': False, 'error': 'Ticker missing'}), 400
+
+    try:
+        t = yf.Ticker(ticker)
+        info = t.info or {}
+        valid = bool(info and info.get('symbol'))
+        if not valid:
+            return jsonify({'valid': False})
+
+        return jsonify({
+            'valid': True,
+            'name': info.get('shortName', ticker),
+            'exchange': info.get('exchange', 'N/A'),
+            'currency': info.get('currency', 'N/A')
+        })
+    except Exception as e:
+        logger.exception("Error validating ticker %s: %s", ticker, e)
+        return jsonify({'valid': False})
