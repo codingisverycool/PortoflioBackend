@@ -270,7 +270,7 @@ def portfolio_tracker_api():
                     stock_info.get('change_pct')
                     or stock_info.get('regularMarketChangePercent')
                     or stock_info.get('changePercent')
-                    or ((change_amt / previous_close) * 100 if previous_close else 0.0) 
+                    or ((change_amt / previous_close) * 100 *100 if previous_close else 0.0) 
                 )
             except Exception:
                 change_pct = ((change_amt / previous_close) * 100) if previous_close else 0.0
